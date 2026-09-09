@@ -7,6 +7,10 @@
 | 模块与接口文档 | 一句话用途 |
 | --- | --- |
 | [logutil](logutil/README.md) | 像 fmt.Print 一样直接打印日志，支持四个级别、统一格式和并发安全。 |
+| [executil](executil/README.md) | 执行完整 Bash 命令或管理实时输出的后台进程。 |
+| [fileutil](fileutil/README.md) | 列出、读写和筛选文件，文件系统错误统一 panic。 |
+| [strutil](strutil/README.md) | 生成随机字符串并识别常见换行符切分内容。 |
+| [waiter](waiter/README.md) | 按间隔检查条件，成功返回 nil，超时返回带消息的错误。 |
 
 ## 使用与维护
 
