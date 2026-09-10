@@ -1,0 +1,16 @@
+:root {
+ color-scheme: dark;
+ --bg: #24232d;
+ --surface: #2d2b37;
+ --field: #35323f;
+ --paper: #322f3c;
+ --soft: #3d3749;
+ --text: #ede6f0;
+ --muted: #b5a8bf;
+ --line: #484051;
+ --accent: #d496bd;
+ --hover: #e7b1d2;
+ --tint: #453347;
+ --button-text: #312033;
+ --shadow: 0 6px 24px #22132208;
+}

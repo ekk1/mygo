@@ -41,9 +41,7 @@ func main() {
 
 ## 使用约定
 
-默认级别为 `LevelInfo`，只打印该级别及以上的日志。
-级别从低到高为 `LevelDebug`、`LevelInfo`、`LevelWarn`、`LevelError`。
-`SetLevel` 对整个进程中的 logutil 调用生效。
+只打印设定级别及以上的日志，`SetLevel` 对整个进程中的 logutil 调用生效。
 
 内部通过互斥锁保护级别和输出，可以并发修改级别、打印日志。
 消息中的换行原样保留；需要格式化字符串时可传入 `fmt.Sprintf(...)` 的结果。
