@@ -18,6 +18,8 @@ type Attrs map[string]string
 
 // Node 是不可变的 HTML 片段。零值为空，可在多个 goroutine 中复用。
 type Node struct {
+	// Only package-generated SVG may use this field; no public raw markup API.
+	svg      template.HTML
 	element  bool
 	tag      string
 	text     string
@@ -74,6 +76,8 @@ func Render(w io.Writer, p Page) error {
 	b := builder{}
 	b.source.WriteString(`<!doctype html><html lang="` + b.value(lang) + `"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>` + b.value(p.Title) + `</title><link rel="stylesheet" href="` + b.value(prefix+"/webui.css") + `"><script defer src="` + b.value(prefix+"/webui.js") + `"></script>`)
 	b.source.WriteString(`<link rel="stylesheet" data-webui-theme-sheet="` + b.value(theme) + `" href="` + b.value(prefix+"/themes/"+theme+".css") + `"><script defer src="` + b.value(prefix+"/theme.js") + `"></script>`)
+	b.source.WriteString(`<script defer src="` + b.value(prefix+"/video.js") + `"></script>`)
+	b.source.WriteString(`<script defer src="` + b.value(prefix+"/chart.js") + `"></script>`)
 	for _, src := range p.Scripts {
 		if !localPath(src) {
 			return fmt.Errorf("webui: invalid script path %q", src)
@@ -85,6 +89,20 @@ func Render(w io.Writer, p Page) error {
 		return err
 	}
 	b.source.WriteString("</body></html>")
+	return b.write(w)
+}
+
+// RenderFragment 仅渲染节点片段，不添加页面外壳或资源引用。
+// 转义与校验规则同 Render；结构或模板错误不写入内容，写入错误原样返回。
+func RenderFragment(w io.Writer, n Node) error {
+	b := builder{}
+	if err := b.node(n); err != nil {
+		return err
+	}
+	return b.write(w)
+}
+
+func (b *builder) write(w io.Writer) error {
 	tmpl, err := template.New("page").Parse(b.source.String())
 	if err != nil {
 		return fmt.Errorf("webui: parse: %w", err)
@@ -116,10 +134,10 @@ func localPath(s string) bool {
 // values remain strings so html/template applies context-sensitive escaping.
 type builder struct {
 	source strings.Builder
-	values []string
+	values []any
 }
 
-func (b *builder) value(s string) string {
+func (b *builder) value(s any) string {
 	b.values = append(b.values, s)
 	return "{{index . " + strconv.Itoa(len(b.values)-1) + "}}"
 }
@@ -128,6 +146,10 @@ const elements = " a abbr address article aside audio b bdi bdo blockquote br bu
 const voidElements = " br col hr img input source track wbr "
 
 func (b *builder) node(n Node) error {
+	if n.svg != "" {
+		b.source.WriteString(b.value(n.svg))
+		return nil
+	}
 	if !n.element {
 		if n.text != "" {
 			b.source.WriteString(b.value(n.text))

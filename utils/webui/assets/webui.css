@@ -117,4 +117,36 @@ dialog::backdrop { background: #20152180; }
 .theme-switcher button[aria-pressed="true"] { background: var(--surface); color: var(--accent); border-color: var(--line); }
 .theme-status { color: var(--accent); font-size: .8rem; }
 .theme-status:empty { display: none; }
+.video-position { margin-block: 12px; }
+.chart { position: relative; margin: 20px 0; min-width: 0; }
+.candlestick-chart { display: block; width: 100%; height: auto; background: var(--paper); border: 1px solid var(--line); border-radius: var(--radius); }
+.candlestick-chart text { fill: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.chart-grid { fill: none; stroke: var(--line); }
+.chart-close { fill: none; stroke: var(--muted); stroke-width: 1; vector-effect: non-scaling-stroke; pointer-events: none; }
+.chart-up { fill: #fff; stroke: #777; stroke-width: 1; }
+.chart-down { fill: #000; stroke: #777; stroke-width: 1; }
+.chart-volume { fill: #999; opacity: .22; }
+.chart-hit { fill: transparent; pointer-events: all; }
+.chart-hit:hover, .chart-hit:focus { fill: #888; fill-opacity: .1; outline: none; }
+.chart-hit:focus-visible { stroke: #888; stroke-width: 1; }
+.chart-tooltip { position: absolute; top: 10px; left: 10px; z-index: 1; max-width: calc(100% - 20px); padding: 8px 12px; border: 1px solid var(--line); border-radius: 6px; background: color-mix(in srgb, var(--surface) 65%, transparent); color: var(--text); font-size: 12px; line-height: 1.5; font-variant-numeric: tabular-nums; white-space: pre-wrap; pointer-events: none; }
+.chart-line { fill: none; stroke: var(--chart-color); stroke-width: 1.8; stroke-linejoin: round; }
+.chart-line-0 { --chart-color: var(--accent); }
+.chart-line-1 { --chart-color: #bf922c; }
+.chart-line-2 { --chart-color: #648bce; }
+.chart figcaption { padding-top: 8px; font-size: .8rem; }
+.chart-legend-line::before { content: ""; display: inline-block; width: 18px; border-top: 2px solid var(--chart-color); margin-right: 6px; vertical-align: middle; }
+@media (max-width: 600px) {
+ .candlestick-chart text { font-size: 24px; }
+ .chart-tooltip { top: 6px; left: 6px; padding: 4px 6px; font-size: 11px; line-height: 1.4; }
+}
 @media (max-width: 600px) { body > header { flex-wrap: wrap; gap: 10px; } .theme-switcher { gap: 2px; } .theme-switcher button { padding-inline: 8px; } }
+
+/* Only manual theme changes animate; geometry and candle hit areas stay immediate. */
+:root.webui-theme-transition,
+:root.webui-theme-transition *:not(.chart-hit),
+:root.webui-theme-transition *::before,
+:root.webui-theme-transition *::after {
+ transition: background-color .2s ease, color .2s ease, border-color .2s ease,
+             outline-color .2s ease, box-shadow .2s ease, fill .2s ease, stroke .2s ease;
+}

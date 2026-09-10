@@ -7,7 +7,7 @@
   const buttons = Array.from(document.querySelectorAll("button[data-webui-theme]"));
   const groups = document.querySelectorAll("[data-webui-theme-controls]");
   const status = document.querySelector("[data-webui-theme-status]");
-  let busy = false;
+  let busy = false, transitionTimer;
 
   function update() {
     buttons.forEach(button => {
@@ -17,7 +17,7 @@
     groups.forEach(group => group.setAttribute("aria-busy", String(busy)));
   }
 
-  function select(name) {
+  function select(name, animate = false) {
     if (busy || !names.includes(name) || name === sheet.dataset.webuiThemeSheet) return;
     busy = true;
     if (status) status.textContent = "";
@@ -40,6 +40,15 @@
     next.onload = function () {
       clearTimeout(timer);
       next.onload = next.onerror = null;
+      clearTimeout(transitionTimer);
+      const root = document.documentElement;
+      root.classList.remove("webui-theme-transition");
+      if (animate && !matchMedia("(prefers-reduced-motion: reduce)").matches) {
+        root.classList.add("webui-theme-transition");
+        // Establish old computed colors before applying the loaded palette.
+        getComputedStyle(document.body).backgroundColor;
+        transitionTimer = setTimeout(() => root.classList.remove("webui-theme-transition"), 250);
+      }
       next.dataset.webuiThemeSheet = name;
       next.media = "all";
       sheet.replaceWith(next);
@@ -51,7 +60,7 @@
     sheet.after(next);
   }
 
-  buttons.forEach(button => button.addEventListener("click", () => select(button.dataset.webuiTheme)));
+  buttons.forEach(button => button.addEventListener("click", () => select(button.dataset.webuiTheme, true)));
   groups.forEach(group => { group.hidden = false; });
   update();
   try { select(localStorage.getItem("webui-theme")); } catch (_) { /* Keep the server default. */ }

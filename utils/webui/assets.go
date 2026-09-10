@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-//go:embed assets/webui.css assets/webui.js assets/theme.js assets/themes/*.css
+//go:embed assets/webui.css assets/webui.js assets/theme.js assets/video.js assets/chart.js assets/themes/*.css
 var assets embed.FS
 
 // Assets 返回 CSS/JS 的 HTTP Handler，仅支持 GET/HEAD，不提供目录列表。
@@ -24,7 +24,7 @@ func Assets() http.Handler {
 		switch name {
 		case "webui.css", "themes/rose.css", "themes/sand.css", "themes/sage.css", "themes/dusk.css":
 			w.Header().Set("Content-Type", "text/css; charset=utf-8")
-		case "webui.js", "theme.js":
+		case "webui.js", "theme.js", "video.js", "chart.js":
 			w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
 		default:
 			http.NotFound(w, r)

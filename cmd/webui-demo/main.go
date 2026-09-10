@@ -62,6 +62,10 @@ func newServer() (*httpserver.Server, error) {
 		s.Close()
 		return nil, err
 	}
+	if err := registerComponents(s); err != nil {
+		s.Close()
+		return nil, err
+	}
 	return s, nil
 }
 
@@ -143,6 +147,7 @@ func demoPage(title, note, message string) webui.Page {
 	return webui.Page{Title: "预览编辑器 · webui", Body: webui.Group(
 		webui.El("header", nil,
 			webui.El("a", webui.Attrs{"href": "/", "class": "brand"}, webui.Text("webui")),
+			webui.El("a", webui.Attrs{"href": "/components"}, webui.Text("视频与 K 线")),
 			webui.El("div", webui.Attrs{"class": "theme-switcher", "data-webui-theme-controls": "", "role": "group", "aria-label": "配色", "hidden": ""}, webui.Group(themes...)),
 			webui.El("span", webui.Attrs{"class": "theme-status", "data-webui-theme-status": "", "role": "status"}, webui.Text("")),
 		),

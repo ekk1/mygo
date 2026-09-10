@@ -31,6 +31,23 @@ func TestRender(t *testing.T) {
 	}
 }
 
+func TestRenderFragment(t *testing.T) {
+	var b bytes.Buffer
+	if err := RenderFragment(&b, El("p", nil, Text("<hello>"))); err != nil {
+		t.Fatal(err)
+	}
+	if b.String() != "<p>&lt;hello&gt;</p>" {
+		t.Fatal(b.String())
+	}
+	b.Reset()
+	if err := RenderFragment(&b, Group(Text("partial"), El("script", nil))); err == nil || b.Len() != 0 {
+		t.Fatal("invalid fragment wrote partial output")
+	}
+	if err := RenderFragment(brokenWriter{}, Text("x")); !errors.Is(err, io.ErrClosedPipe) {
+		t.Fatal(err)
+	}
+}
+
 func TestInvalidStructureDoesNotWrite(t *testing.T) {
 	for _, n := range []Node{
 		El("", nil),
@@ -142,6 +159,8 @@ func TestAssets(t *testing.T) {
 	}{
 		{"GET", "/ui/webui.css", 200, "text/css"}, {"GET", "/ui/webui.js", 200, "javascript"},
 		{"GET", "/ui/theme.js", 200, "javascript"},
+		{"GET", "/ui/video.js", 200, "javascript"},
+		{"GET", "/ui/chart.js", 200, "javascript"},
 		{"GET", "/ui/themes/rose.css", 200, "text/css"},
 		{"GET", "/ui/themes/sand.css", 200, "text/css"},
 		{"GET", "/ui/themes/sage.css", 200, "text/css"},
