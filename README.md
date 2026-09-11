@@ -25,8 +25,6 @@ Go 1.24 或更高版本。整个仓库使用单个 Go module：`github.com/ekk1/
 └── README.md
 ```
 
-命令入口放在 `cmd/<工具名>/`，可复用代码放在 `utils/<模块>/`。包依赖和接口维护要求见 [开发约定](AGENTS.md)，现有模块见 [模块索引](utils/README.md)。
-
 ## 常用命令
 
 以下命令均在仓库根目录运行：

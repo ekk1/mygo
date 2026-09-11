@@ -13,6 +13,8 @@
 | [kv](kv/README.md) | 并发安全的内存 KV 数据库，支持 string、hash、list 和整库 JSON 保存加载。 |
 | [waiter](waiter/README.md) | 按间隔检查条件，成功返回 nil，超时返回带消息的错误。 |
 | [httpclient](httpclient/README.md) | 配置代理和证书，一次调用完成 JSON/Form 请求及响应解码。 |
+| [massive](massive/README.md) | 获取 Massive 股票日线和 1 分钟线，支持代理与自动分页。 |
+| [tiingo](tiingo/README.md) | 获取 Tiingo EOD 原始与调整后日线，支持代理。 |
 | [httpserver](httpserver/README.md) | 快速注册路由、中间件和静态目录，支持 HTTP、TLS 及 Unix socket。 |
 | [webui](webui/README.md) | 用 Go 组合 HTML 页面，提供本地配色、视频位置按钮、SVG K 线图和请求辅助 JS。 |
 
