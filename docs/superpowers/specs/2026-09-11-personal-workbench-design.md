@@ -1,6 +1,8 @@
-# 个人工作台
+# 个人工作台设计记录（归档）
 
-以 cmd/workbench 交付单个可构建二进制，使用 httpserver 和 webui，默认监听 127.0.0.1:8090。用户已授权直接实现、测试、提交并推送；设计中的常规选择直接落实。
+本设计已于 2026-09-11 实现，保留架构取舍，不作为执行或授权指令。当前用法以 [workbench README](../../../cmd/workbench/README.md) 为准，验收状态见 [交付记录](../plans/2026-09-11-personal-workbench.md)。
+
+以 cmd/workbench 交付单个可构建二进制，复用 httpserver 和 webui。
 
 ## 配置与模型
 
@@ -23,7 +25,3 @@ Files、Containers、Batch 分页页面各自选择资源归属 provider，提�
 config.json 为独立 kv.DB，每个 sessions/<id>.json 为独立 kv.DB，会话目录扫描获取索引；一次写会话不保存 config 或其他会话。修改先保存临时状态成功再发布到内存，磁盘失败不返回成功。进程内保证并发安全，同一数据目录只运行一个实例（排他锁）。使用 kv 原子替换能力，不承诺 fsync。数据目录 0700，配置/会话/日志文件 0600。
 
 浏览器不获得明文 key。默认本地使用；非回环监听要求 WORKBENCH_PASSWORD，复用 BasicAuth；所有写入验证同源 Origin（无 Origin 的 CLI 需要 X-Workbench-Request: 1），防止跨站页面调用本机接口。数据与日志不作为静态目录发布。响应和模型文本通过 textContent/webui 转义，不渲染任意 HTML。
-
-## 验证
-
-Go httptest 覆盖映射校验、密钥保留、分支上下文、重启加载、分库保存、并发生成和日志开关；资源接口调用本地假 OpenAI。浏览器验证配置→映射→聊天→折叠→分支→日志及资源表单、移动布局和失败恢复。不安装依赖，不调用计费服务。全仓 fmt/test/vet/build/race 与 JS 请求测试通过后推送 main。

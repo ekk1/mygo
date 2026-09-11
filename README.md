@@ -19,7 +19,7 @@ Go 1.24 或更高版本。整个仓库使用单个 Go module：`github.com/ekk1/
 ├── utils/
 │   ├── <模块>/           # 实现、测试和模块 README
 │   └── README.md         # 唯一模块索引
-├── docs/superpowers/plans/ # 已归档的实现记录
+├── docs/superpowers/      # 设计记录、已完成归档与后续计划
 ├── bin/                  # 构建与截图产物，已忽略
 ├── AGENTS.md             # 开发、安装与验证约定
 ├── go.mod
@@ -61,3 +61,7 @@ go build -o ./bin/workbench ./cmd/workbench
 ```
 
 打开工作台的“设置”页面配置服务商和精选模型映射。完整用法、跨机访问、日志和存储说明见 [workbench 文档](cmd/workbench/README.md)。
+
+## 设计与计划
+
+已完成功能的用法维护在各 README，已完成计划归档，未实施需求继续保留为待办。[AI 客户端计划](docs/superpowers/plans/2026-09-11-ai-native-clients.md)中 OpenAI 已交付，Anthropic、Gemini、xAI 为后续待办；[工作台计划](docs/superpowers/plans/2026-09-11-personal-workbench.md)已归档。

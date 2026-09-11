@@ -104,10 +104,4 @@ WORKBENCH_GO=go WORKBENCH_CHROMIUM=/usr/bin/chromium \
 
 测试脚本自行创建临时数据目录和本地假 provider，覆盖配置、目录发现、逻辑模型、对话、分支、日志、资源及手机布局。运行 Go 程序不需要这些浏览器测试工具。
 
-### 本次验证记录（2026-09-11）
-
-全仓 Go fmt/test/vet/build/race、JS 语法检查、webui 的 5 项请求测试以及工作台的 6 项 Chromium 浏览器测试全部通过，无跳过项。浏览器测试覆盖配置与模型映射、失败草稿恢复、流式对话、折叠与分支、请求日志、资源表单、文件上传下载、容器/Batch 原生 JSON 和手机布局；使用本地假服务，未调用真实计费 API。
-
-已检查桌面与手机截图、四套主题的明暗模式，修复了无图片消息显示 null、输入区遮挡回答、会话按钮溢出、深色背景和手机导航标签问题。浏览器保持 sandbox 开启，退出及临时服务清理成功。截图由测试生成到 `bin/workbench-browser/`，不纳入版本控制。
-
-用户授权的 27 个 Debian 官方依赖包已下载并解包到任务临时目录供 Chromium 使用；由于 sudo 需要密码，没有写入系统目录。这些库仅用于浏览器验证，工作台运行无需安装。
+验收结果见 [工作台交付记录](../../docs/superpowers/plans/2026-09-11-personal-workbench.md)。主题与手机截图由测试写入 `bin/workbench-browser/`，不纳入版本控制。

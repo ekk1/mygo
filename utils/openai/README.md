@@ -55,9 +55,22 @@ func (c *Client) DownloadMedia(ctx context.Context, rawURL string, dst io.Writer
 
 ```go
 func (c *Client) ListModels(ctx context.Context) (*ModelList, error)
+type Model struct {
+    ID, Object string
+    Created int64
+    OwnedBy string
+    Raw json.RawMessage
+}
+func (*Model) UnmarshalJSON([]byte) error
+func (Model) MarshalJSON() ([]byte, error)
+type ModelList struct {
+    Object string
+    Data []Model
+    HTTP *HTTPResponse
+}
 ```
 
-`ListModels` 返回 provider 的 `/models` 原生目录。`ModelList` 包含 `Object`、`Data []Model` 和 `HTTP`；`Model` 解码 `ID`、`Object`、`Created`、`OwnedBy`，并在 `Raw` 中保留完整原生 metadata，重新编码时原样输出该对象。
+`ListModels` 返回 provider 的 `/models` 原生目录；`HTTP` 保留状态、响应头和原始正文。`Model.UnmarshalJSON` 解码常用字段并在 `Raw` 中保留完整原生 metadata；`MarshalJSON` 优先原样输出 `Raw`。需要修改已解码字段时，先将该模型的 `Raw` 置 nil。
 
 ## 最小示例
 
