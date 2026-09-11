@@ -103,7 +103,7 @@
   });
   const actionLabels={chat:"发送",image:"生成图片","image-edit":"编辑图片",speech:"合成语音",transcribe:"开始转写",translate:"翻译音频",video:"提交视频任务"};
   const promptLabels={chat:"消息",speech:"要朗读的文本",transcribe:"转写提示（可选）",translate:"翻译提示（可选）",video:"视频描述"};
-  const prompt=el("textarea",{name:"prompt",rows:chat?4:6,placeholder:chat?"输入消息，Ctrl / ⌘ + Enter 发送":"输入本次任务的内容…"},draft.prompt||"");
+  const prompt=el("textarea",{name:"prompt",rows:chat?3:6,placeholder:chat?"输入消息，Ctrl / ⌘ + Enter 发送":"输入本次任务的内容…"},draft.prompt||"");
   prompt.required=!["transcribe","translate"].includes(page);controls.prompt=prompt;
   const settingsFields=descriptors(vendor,page).map(([name,label,type,value,choices])=>{
     let control;
@@ -137,7 +137,7 @@
     el("details",{class:"advanced"},el("summary",{},"原生扩展参数"),field("额外 JSON 字段",extras,"使用当前服务商的原生字段；重名字段会提示冲突。")));
   const modelBar=el("div",{class:"model-bar"},field("实际模型",model),discover,catalog,el("datalist",{id:"service-tiers"},["auto","default","flex","priority"].map(value=>el("option",{value}))));
   const send=el("button",{type:"submit"},actionLabels[page]);let controller=null,busy=false;
-  const stop=button("停止",()=>controller?.abort(),"quiet");stop.disabled=true;
+  const stop=button("停止",()=>controller?.abort(),"quiet");stop.disabled=true;stop.hidden=chat;
   const previewButton=button("预览请求",()=>perform(true),"secondary");
   const attachments=el("div",{class:"attachment-list"});
   function updateAttachments(){
@@ -150,10 +150,11 @@
     ["image-edit","transcribe","translate"].includes(page)?field(page==="image-edit"?"原始图片":"音频文件",files):null,
     attachments,
     page==="image-edit"&&["openai","compatible"].includes(vendor)?field("蒙版（可选）",mask):null,
-    status,el("div",{class:"actions"},send,previewButton,stop),chat?el("small",{class:"muted"},"Enter 换行 · Ctrl / ⌘ + Enter 发送"):null);
+    status,el("div",{class:"actions"},send,previewButton,stop,chat?el("small",{class:"muted composer-hint"},"Enter 换行 · Ctrl / ⌘ + Enter 发送"):null));
+  const conversation=chat?el("section",{class:"conversation","aria-label":"当前对话"},messages,composer):null;
   const form=el("form",{class:"workspace-form "+(chat?"chat-form":"task-form"),novalidate:""},
     vendor==="xai"&&["speech","transcribe"].includes(page)?null:modelBar,
-    chat?messages:null,composer,configuration,preview,chat?null:result);
+    chat?conversation:composer,configuration,preview,chat?null:result);
   let session=null,parent="";
   const sessionsPanel=el("aside",{class:"card session-panel"});
   const sessionStatus=el("div",{class:"small"});let sessionList=[],sessionListLoaded=false;
@@ -206,11 +207,14 @@
       messages.append(field("查看分支",choices));
     }
     for(const message of pathMessages()){
-      const node=el("details",{class:`message ${message.role}`,open:true,"data-message-id":message.id,"data-status":message.status},
-        el("summary",{},message.role==="user"?"你":"模型",el("span",{class:"badge"},statuses[message.status]||message.status),message.id===parent?el("span",{class:"badge good"},"从这里续接"):null),
+      const content=message.output?W.result(message.output):null,native=content?.querySelector(":scope > .native-details"),resultCopy=content?.querySelector(":scope > .copy-result");
+      native?.remove();resultCopy?.remove();
+      if(message.text)content?.querySelector(":scope > .message-text")?.remove();
+      const node=el("article",{class:`message ${message.role}`,"data-message-id":message.id,"data-status":message.status},
+        el("header",{class:"message-heading"},el("strong",{},message.role==="user"?"你":"模型"),message.status!=="complete"?el("span",{class:"badge"},statuses[message.status]||message.status):null,message.id===parent?el("span",{class:"continuation-label"},"当前续接点"):null),
         message.text?el("div",{class:"message-text"},message.text):null,
         message.error?W.notice(message.error,true):null,
-        message.output?W.result(message.output):null);
+        content);
       const branch=button("从这里继续",()=>{if(busy)return;parent=message.id;remember();invalidate();renderMessages();prompt.focus();},"quiet");
       const fork=W.action("复制为新会话",async()=>{
         if(busy)return;busy=true;const unlock=W.lock(form),unlockList=W.lock(sessionsPanel);
@@ -220,7 +224,7 @@
         }finally{busy=false;unlock();unlockList();applyProtocol();renderMessages();renderSessions();}
       },"quiet",status);
       branch.disabled=busy;fork.disabled=busy;
-      node.append(el("div",{class:"message-meta"},message.text?W.copyButton(message.text):null,branch,fork));messages.append(node);
+      node.append(el("div",{class:"message-meta"},message.text?W.copyButton(message.text):resultCopy,branch,fork,native));messages.append(node);
     }
     messages.scrollTop=atEnd?messages.scrollHeight:scrollTop;
   }
@@ -283,7 +287,7 @@
     const values=collect();
     if(controls.protocol?.value==="chat")for(const name of toolNames)values[name]=["search","code","image_tool"].includes(name)?false:"";
     busy=true;const unlock=W.lock(form),unlockList=W.lock(sessionsPanel);
-    controller=new AbortController();stop.disabled=false;
+    controller=new AbortController();stop.disabled=false;stop.hidden=false;
     send.textContent=isPreview?actionLabels[page]:"处理中…";
     status.replaceChildren(W.notice(isPreview?"正在构建请求预览…":"请求处理中…"));
     if(!chat&&!isPreview)result.setAttribute("aria-busy","true");
@@ -295,9 +299,9 @@
         let liveText;
         if(!isPreview){
           remember();renderMessages();messages.querySelector(".empty")?.remove();
-          messages.append(el("details",{class:"message user",open:true},el("summary",{},"你"),el("div",{class:"message-text"},values.prompt)));
+          messages.append(el("article",{class:"message user"},el("header",{class:"message-heading"},el("strong",{},"你")),el("div",{class:"message-text"},values.prompt)));
           liveText=el("div",{class:"message-text","data-live-text":""},"等待模型响应…");
-          messages.append(el("details",{class:"message assistant",open:true},el("summary",{},"模型 · 生成中"),liveText));liveText.dataset.waiting="true";
+          messages.append(el("article",{class:"message assistant"},el("header",{class:"message-heading"},el("strong",{},"模型"),el("span",{class:"badge"},"生成中")),liveText));liveText.dataset.waiting="true";
           messages.scrollTop=messages.scrollHeight;
         }
         const onEvent=event=>{
@@ -341,13 +345,14 @@
         }catch(reload){W.fail(reload,status);}
       }
     }finally{
-      busy=false;unlock();unlockList();stop.disabled=true;controller=null;send.textContent=actionLabels[page];
+      busy=false;unlock();unlockList();stop.disabled=true;stop.hidden=chat;controller=null;send.textContent=actionLabels[page];
       result.removeAttribute("aria-busy");applyProtocol();if(chat){renderMessages();renderSessions();}
     }
   }
   form.addEventListener("submit",event=>{event.preventDefault();perform(false);});
   prompt.addEventListener("keydown",event=>{if(chat&&!event.isComposing&&event.key==="Enter"&&(event.ctrlKey||event.metaKey)){event.preventDefault();perform(false);}});
-  W.root.replaceChildren(W.heading(labels[page],`${W.vendors[vendor].name} / ${profile.name}`),chat?el("div",{class:"chat-layout"},sessionsPanel,form):form);
+  const heading=W.heading(labels[page],`${W.vendors[vendor].name} / ${profile.name}`);if(chat)heading.classList.add("chat-heading");
+  W.root.replaceChildren(heading,chat?el("div",{class:"chat-layout"},sessionsPanel,form):form);
   function videoTask(id){
     W.root.querySelector("#video-task")?.remove();
     const taskStatus=el("div",{});id.required=true;
