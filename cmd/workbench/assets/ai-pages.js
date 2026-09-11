@@ -3,7 +3,7 @@
  const W=window.WB,{el,button,field,input,select,pretty}=W;
  const labels={chat:"文字对话",image:"图片生成","image-edit":"图片编辑",speech:"语音合成",transcribe:"音频转写",translate:"音频翻译",video:"视频生成",files:"文件",containers:"容器",batches:"Batch 任务"};
  const menus={openai:["chat","image","image-edit","speech","transcribe","translate","files","containers","batches"],anthropic:["chat","files","batches"],gemini:["chat","image","image-edit","speech","transcribe","video","files","batches"],xai:["chat","image","image-edit","speech","transcribe","video","files","batches"]};
- W.menu=()=>{let ids=menus[W.vendor];if(W.vendor==="compatible"){ids=["chat"];for(const name of W.profile?.resources||[]){if(name==="images")ids.push("image","image-edit");else if(name==="audio")ids.push("speech","transcribe","translate");else ids.push(name);}}return(ids||[]).map(id=>[id,labels[id]]);};
+ W.menu=(selectedProfile=W.profile)=>{let ids=menus[W.vendor];if(W.vendor==="compatible"){ids=["chat"];for(const name of selectedProfile?.resources||[]){if(name==="images")ids.push("image","image-edit");else if(name==="audio")ids.push("speech","transcribe","translate");else ids.push(name);}}return(ids||[]).map(id=>[id,labels[id]]);};
  const descriptors=(kind,page)=>{
    const text=page==="chat",image=page==="image"||page==="image-edit";
    const fields=[];
@@ -72,7 +72,7 @@
   let modelIDs=[...(profile.models||[])];
   try{const saved=JSON.parse(sessionStorage.getItem(catalogKey)||"null");if(Array.isArray(saved))modelIDs=[...new Set([...modelIDs,...saved.filter(id=>typeof id==="string")])];}catch{}
   const catalog=el("datalist",{id:"model-catalog"});
-  const updateCatalog=()=>catalog.replaceChildren(modelIDs.map(id=>el("option",{value:id})));
+  const updateCatalog=()=>catalog.replaceChildren(...modelIDs.map(id=>el("option",{value:id})));
   updateCatalog();
   const discover=button("发现模型",async()=>{
     const modal=W.dialog("选择模型"),search=input("model_search","","search");
@@ -101,43 +101,241 @@
     modal.body.replaceChildren(el("div",{class:"model-search"},field("搜索模型",search),refresh),info,list);
     render();search.focus();refresh.click();
   });
-  const prompt=el("textarea",{name:"prompt",rows:chat?4:6,placeholder:chat?"输入消息…":"描述你希望完成的工作…"},draft.prompt||"");prompt.required=!["transcribe","translate"].includes(page);controls.prompt=prompt;
-  const settingsFields=descriptors(vendor,page).map(([name,label,type,value,choices])=>{let control;if(type==="select")control=select(name,choices,draft[name]??(name==="protocol"?profile.protocol:value));else if(type==="textarea")control=el("textarea",{name,rows:2},draft[name]??value);else control=input(name,draft[name]??value,type);if(type==="checkbox")control.checked=draft[name]??value;if(type==="number")control.step="any";if(name==="tier"&&type==="text"){control.setAttribute("list","service-tiers");control.placeholder="省略 / auto / default / flex / priority";}controls[name]=control;return field(label,control);});
+  const actionLabels={chat:"发送",image:"生成图片","image-edit":"编辑图片",speech:"合成语音",transcribe:"开始转写",translate:"翻译音频",video:"提交视频任务"};
+  const promptLabels={chat:"消息",speech:"要朗读的文本",transcribe:"转写提示（可选）",translate:"翻译提示（可选）",video:"视频描述"};
+  const prompt=el("textarea",{name:"prompt",rows:chat?4:6,placeholder:chat?"输入消息，Ctrl / ⌘ + Enter 发送":"输入本次任务的内容…"},draft.prompt||"");
+  prompt.required=!["transcribe","translate"].includes(page);controls.prompt=prompt;
+  const settingsFields=descriptors(vendor,page).map(([name,label,type,value,choices])=>{
+    let control;
+    if(type==="select")control=select(name,choices,draft[name]??(name==="protocol"?profile.protocol:value));
+    else if(type==="textarea")control=el("textarea",{name,rows:2},draft[name]??value);
+    else control=input(name,draft[name]??value,type);
+    if(type==="checkbox")control.checked=draft[name]??value;
+    if(type==="number"){control.step=name==="temperature"?"any":"1";control.min=["thinking","thinkingBudget"].includes(name)?"0":"1";if(name==="temperature")control.min="0";}
+    if(name==="max_tokens"&&vendor==="anthropic")control.required=true;
+    if(name==="tier"&&type==="text"){control.setAttribute("list","service-tiers");control.placeholder="留空使用服务商默认值";}
+    controls[name]=control;
+    return {name,node:field(label,control)};
+  });
   const extras=el("textarea",{name:"extra",rows:5,spellcheck:"false"},draft.extra||"{}");controls.extra=extras;
   const files=el("input",{type:"file",name:"files",multiple:page==="image-edit",accept:page==="image-edit"?"image/*":"audio/*",required:["image-edit","transcribe","translate"].includes(page)});
   const mask=el("input",{type:"file",name:"mask",accept:"image/png"});
-  const status=el("div",{class:"workspace-status"});const result=el("section",{class:"results","aria-live":"polite"});const preview=el("div",{});const messages=el("div",{id:"messages",class:"messages"});
-  const configuration=el("details",{class:"card parameters",open:!chat},el("summary",{},"参数设置"),el("div",{class:"parameter-grid"},settingsFields),el("details",{class:"advanced"},el("summary",{},"原生扩展参数"),field("额外 JSON 字段",extras,"填写当前服务商原生字段；与上方已设置字段重名会提示冲突。")));
-  const modelBar=el("div",{class:"model-bar"},field("实际模型",model),discover,catalog,el("datalist",{id:"service-tiers"},["auto","default","flex","priority","fast","scale"].map(value=>el("option",{value}))));
-  const send=el("button",{type:"submit"},chat?"发送":"生成 / 提交");let controller=null,busy=false;
+  const status=el("div",{class:"workspace-status","aria-live":"polite"});
+  const result=el("section",{class:"results card","aria-live":"polite"},el("h2",{},"结果"),el("p",{class:"muted"},"完成任务后，结果会显示在这里。"));
+  const preview=el("div",{class:"preview-slot"});
+  const messages=el("div",{id:"messages",class:"messages"});
+  const toolNames=new Set(["search","code","image_tool","container","file_ids","mime"]);
+  const group=(name,items)=>el("fieldset",{class:"parameter-group"},el("legend",{},name),el("div",{class:"parameter-grid"},items.map(item=>item.node)));
+  const general=settingsFields.filter(item=>!toolNames.has(item.name)&&item.name!=="system");
+  const tools=settingsFields.filter(item=>toolNames.has(item.name));
+  const system=settingsFields.filter(item=>item.name==="system");
+  const protocolHelp=el("p",{class:"field-help muted small",hidden:true},"当前使用 Chat Completions，Responses 的工具与文件引用不参与此请求。");
+  const configuration=el("details",{class:"card parameters",open:!chat},el("summary",{},"参数设置"),
+    general.length?group(chat?"生成参数":"输出设置",general):null,
+    system.length?group("系统指令",system):null,
+    tools.length?group("工具与附件",tools):null,protocolHelp,
+    el("details",{class:"advanced"},el("summary",{},"原生扩展参数"),field("额外 JSON 字段",extras,"使用当前服务商的原生字段；重名字段会提示冲突。")));
+  const modelBar=el("div",{class:"model-bar"},field("实际模型",model),discover,catalog,el("datalist",{id:"service-tiers"},["auto","default","flex","priority"].map(value=>el("option",{value}))));
+  const send=el("button",{type:"submit"},actionLabels[page]);let controller=null,busy=false;
   const stop=button("停止",()=>controller?.abort(),"quiet");stop.disabled=true;
   const previewButton=button("预览请求",()=>perform(true),"secondary");
-  const composer=el("section",{class:"card composer stack"},field(chat?"消息":["transcribe","translate"].includes(page)?"转写提示（可选）":"提示词 / 输入",prompt),["image-edit","transcribe","translate"].includes(page)?field(page==="image-edit"?"原始图片":"音频文件",files):null,page==="image-edit"&&["openai","compatible"].includes(vendor)?field("蒙版（可选）",mask):null,el("div",{class:"actions"},send,previewButton,stop));
-  const form=el("form",{class:"workspace-form"},vendor==="xai"&&["speech","transcribe"].includes(page)?null:modelBar,configuration,chat?messages:null,composer,preview,status,chat?null:result);
-  let session=null,parent="";const sessionsPanel=el("aside",{class:"card session-panel"});
-  const renderMessages=()=>{messages.replaceChildren();if(!session?.messages.length){messages.append(el("div",{class:"empty"},el("strong",{},"开始一个新对话"),el("p",{},"模型与参数属于当前 profile。发送前可检查原始请求。")));return;}for(const m of session.messages){const node=el("details",{class:`message ${m.role}`,open:true},el("summary",{},m.role==="user"?"你":"模型",el("span",{class:"badge"},m.status),m.id===parent?el("span",{class:"badge good"},"下一次从这里继续"):null),el("div",{class:"message-text"},m.text||m.error||"（见原生结果）"),m.output?W.result(m.output):null,el("div",{class:"message-meta"},button("从这里继续",()=>{parent=m.id;invalidate();renderMessages();},"quiet"),button("复制为新会话",async()=>{if(busy)return;try{session=await W.api(`/api/sessions/${session.id}/fork`,{method:"POST",body:JSON.stringify({node_id:m.id})});parent=session.head_id;invalidate();renderMessages();await refreshSessions();}catch(error){W.fail(error,status);}},"quiet")));messages.append(node);}};
-  const refreshSessions=async()=>{const list=await W.api(`/api/sessions?profile_id=${encodeURIComponent(profile.id)}`);sessionsPanel.replaceChildren(el("h2",{},"会话"),button("新建会话",()=>{if(busy)return;session=null;parent="";invalidate();renderMessages();refreshSessions().catch(error=>W.fail(error,status));}),el("div",{class:"session-list"},list.filter(item=>item.operation===operationForChat()).map(item=>el("div",{class:`session-item ${session?.id===item.id?"active":""}`},button(item.title,async()=>{if(busy)return;try{session=await W.api(`/api/sessions/${item.id}`);parent=session.head_id;invalidate();renderMessages();await refreshSessions();}catch(error){W.fail(error,status);}},"quiet"),button("删除",()=>W.confirm(`删除会话「${item.title}」？`,async()=>{if(busy)return;await W.api(`/api/sessions/${item.id}`,{method:"DELETE"});if(session?.id===item.id){session=null;parent="";renderMessages();}await refreshSessions();}),"danger")))));};
+  const attachments=el("div",{class:"attachment-list"});
+  function updateAttachments(){
+    attachments.replaceChildren(...[...files.files].map(file=>el("span",{class:"badge"},file.name)));
+    if(files.files.length)attachments.append(button("清除附件",()=>{files.value="";mask.value="";updateAttachments();invalidate();},"quiet"));
+  }
+  files.addEventListener("change",updateAttachments);
+  const composer=el("section",{class:"card composer stack"},
+    field(promptLabels[page]||"提示词 / 输入",prompt),
+    ["image-edit","transcribe","translate"].includes(page)?field(page==="image-edit"?"原始图片":"音频文件",files):null,
+    attachments,
+    page==="image-edit"&&["openai","compatible"].includes(vendor)?field("蒙版（可选）",mask):null,
+    status,el("div",{class:"actions"},send,previewButton,stop),chat?el("small",{class:"muted"},"Enter 换行 · Ctrl / ⌘ + Enter 发送"):null);
+  const form=el("form",{class:"workspace-form "+(chat?"chat-form":"task-form"),novalidate:""},
+    vendor==="xai"&&["speech","transcribe"].includes(page)?null:modelBar,
+    chat?messages:null,composer,configuration,preview,chat?null:result);
+  let session=null,parent="";
+  const sessionsPanel=el("aside",{class:"card session-panel"});
   const operationForChat=()=>vendor==="anthropic"?"messages.create":vendor==="gemini"?"content.generate":controls.protocol?.value==="chat"?"chat.create":"responses.create";
-  const collect=()=>{const values=Object.fromEntries(Object.entries(controls).map(([key,c])=>[key,c.type==="checkbox"?c.checked:c.value]));values.files=[...files.files];values.mask=[...mask.files];return values;};
-  function invalidate(){if(preview.childNodes.length)preview.replaceChildren(W.notice("输入或参数已变化，请重新预览。"));const values=collect();delete values.files;delete values.mask;try{sessionStorage.setItem(draftKey,JSON.stringify(values));}catch{}}
+  const activeKey=()=>`wb-session-${profile.id}-${operationForChat()}`;
+  const remember=()=>{try{if(session)sessionStorage.setItem(activeKey(),JSON.stringify({id:session.id,parent}));else sessionStorage.removeItem(activeKey());}catch{}};
+  function applyProtocol(){
+    const incompatible=controls.protocol?.value==="chat";
+    for(const name of toolNames)if(controls[name])controls[name].disabled=incompatible||busy;
+    protocolHelp.hidden=!incompatible;
+  }
+  const collect=()=>{
+    const values=Object.fromEntries(Object.entries(controls).map(([key,c])=>[key,c.type==="checkbox"?c.checked:c.value]));
+    values.model=values.model.trim();values.files=[...files.files];values.mask=[...mask.files];return values;
+  };
+  function invalidate(){
+    if(preview.childNodes.length)preview.replaceChildren(W.notice("输入或参数已变化，请重新预览。"));
+    const values=collect();delete values.files;delete values.mask;
+    try{sessionStorage.setItem(draftKey,JSON.stringify(values));}catch{}
+  }
+  function pathMessages(){
+    const byID=new Map(session.messages.map(message=>[message.id,message])),path=[],seen=new Set();
+    for(let id=parent;id&&byID.has(id)&&!seen.has(id);){seen.add(id);const message=byID.get(id);path.unshift(message);id=message.parent_id;}
+    return path;
+  }
+  const statuses={complete:"已完成",pending:"生成中",error:"失败",cancelled:"已停止"};
+  function renderMessages(followEnd=false){
+    const scrollTop=messages.scrollTop,atEnd=followEnd||messages.scrollHeight-messages.scrollTop-messages.clientHeight<48;
+    messages.replaceChildren();
+    if(!session?.messages.length){messages.append(el("div",{class:"empty"},el("strong",{},"开始一个新对话"),el("p",{},"选择模型，输入消息；需要时再调整参数。")));return;}
+    const parents=new Set(session.messages.map(message=>message.parent_id));
+    const leaves=session.messages.filter(message=>!parents.has(message.id));
+    if(leaves.length>1){
+      const options=leaves.map((message,index)=>[message.id,`分支 ${index+1} · ${message.text.slice(0,40)||statuses[message.status]}`]);
+      if(!leaves.some(message=>message.id===parent))options.unshift([parent,"当前续接点"]);
+      const choices=select("branch",options,parent);
+      choices.disabled=busy;choices.addEventListener("change",()=>{parent=choices.value;remember();invalidate();renderMessages();});
+      messages.append(field("查看分支",choices));
+    }
+    for(const message of pathMessages()){
+      const node=el("details",{class:`message ${message.role}`,open:true,"data-message-id":message.id,"data-status":message.status},
+        el("summary",{},message.role==="user"?"你":"模型",el("span",{class:"badge"},statuses[message.status]||message.status),message.id===parent?el("span",{class:"badge good"},"从这里续接"):null),
+        message.text?el("div",{class:"message-text"},message.text):null,
+        message.error?W.notice(message.error,true):null,
+        message.output?W.result(message.output):null);
+      const branch=button("从这里继续",()=>{if(busy)return;parent=message.id;remember();invalidate();renderMessages();prompt.focus();},"quiet");
+      const fork=W.action("复制为新会话",async()=>{
+        if(busy)return;busy=true;const unlock=W.lock(form),unlockList=W.lock(sessionsPanel);
+        try{
+          session=await W.api(`/api/sessions/${session.id}/fork`,{method:"POST",body:JSON.stringify({node_id:message.id})});
+          parent=session.head_id;remember();invalidate();renderMessages();await refreshSessions();
+        }finally{busy=false;unlock();unlockList();applyProtocol();renderMessages();}
+      },"quiet",status);
+      branch.disabled=busy;fork.disabled=busy;
+      node.append(el("div",{class:"message-meta"},message.text?W.copyButton(message.text):null,branch,fork));messages.append(node);
+    }
+    messages.scrollTop=atEnd?messages.scrollHeight:scrollTop;
+  }
+  async function openSession(id,selectedParent){
+    if(busy)return;busy=true;const unlock=W.lock(form),unlockList=W.lock(sessionsPanel);
+    try{
+      const loaded=await W.api(`/api/sessions/${id}`);
+      if(loaded.profile_id!==profile.id||loaded.operation!==operationForChat())throw new Error("会话归属不匹配，请重新选择。");
+      session=loaded;parent=selectedParent&&loaded.messages.some(message=>message.id===selectedParent)?selectedParent:loaded.head_id;
+      remember();invalidate();renderMessages(true);
+    }catch(error){W.fail(error,status);}
+    finally{busy=false;unlock();unlockList();applyProtocol();renderMessages();}
+    await refreshSessions();
+  }
+  function renameSession(item){
+    const modal=W.dialog("重命名会话"),name=input("session_title",item.title);name.required=true;name.maxLength=120;
+    const feedback=el("div",{});
+    const editor=el("form",{class:"stack"},field("会话名称",name),feedback,el("div",{class:"actions"},el("button",{type:"submit"},"保存名称")));
+    editor.addEventListener("submit",async event=>{
+      event.preventDefault();if(!W.validate(editor))return;const unlock=W.lock(editor);modal.setBusy(true);
+      try{await W.api(`/api/sessions/${item.id}`,{method:"PATCH",body:JSON.stringify({title:name.value.trim()})});modal.close();await refreshSessions();}
+      catch(error){feedback.replaceChildren(W.notice(error.message,true));}
+      finally{unlock();modal.setBusy(false);}
+    });modal.body.append(editor);name.focus();name.select();
+  }
+  async function refreshSessions(){
+    try{
+      const list=(await W.api(`/api/sessions?profile_id=${encodeURIComponent(profile.id)}`)).filter(item=>item.operation===operationForChat());
+      sessionsPanel.replaceChildren(el("div",{class:"section-head"},el("h2",{},"会话"),button("新建会话",()=>{if(busy)return;session=null;parent="";remember();invalidate();renderMessages();refreshSessions();prompt.focus();},"quiet")),
+        ...(!list.length?[el("p",{class:"small muted"},"发送第一条消息后，会话会自动保存。")]:[]),
+        el("div",{class:"session-list"},list.map(item=>el("div",{class:`session-item ${session?.id===item.id?"active":""}`},
+          button(item.title,()=>openSession(item.id),"quiet"),
+          W.action("管理",async()=>{if(busy)return;const modal=W.dialog(item.title);modal.body.append(el("div",{class:"actions"},
+            button("重命名",()=>{modal.close();renameSession(item);}),
+            button("删除会话",()=>{modal.close();W.confirm(`删除会话「${item.title}」？`,async()=>{
+              await W.api(`/api/sessions/${item.id}`,{method:"DELETE"});
+              if(session?.id===item.id){session=null;parent="";remember();renderMessages();}await refreshSessions();
+            },"只删除本地会话，不影响云端资源。");},"danger")));},"quiet",status)))));
+    }catch(error){W.fail(error,sessionsPanel);}
+  }
   form.addEventListener("input",invalidate);form.addEventListener("change",invalidate);
-  controls.protocol?.addEventListener("change",()=>{session=null;parent="";renderMessages();refreshSessions().catch(error=>W.fail(error,status));});
-  async function perform(isPreview){if(busy||!form.reportValidity())return;busy=true;send.disabled=true;previewButton.disabled=true;discover.disabled=true;for(const c of [...Object.values(controls),files,mask])c.disabled=true;controller=new AbortController();stop.disabled=false;status.replaceChildren(W.notice(isPreview?"正在构建请求预览…":"请求处理中…"));
-    try{const values=collect();const request=await builders[vendor](page,values);let response;
-      if(chat){const payload={provider_id:profile.id,operation:request.operation,params:request.params,parent_id:parent,expected_head:session?.head_id||"",revision:W.config.revision,text:values.prompt,stream:values.stream};
-        if(!isPreview&&!session){session=await W.api("/api/sessions",{method:"POST",body:JSON.stringify({profile_id:profile.id,operation:request.operation,title:values.prompt.slice(0,60)||"新会话"})});}
+  controls.protocol?.addEventListener("change",async()=>{session=null;parent="";applyProtocol();renderMessages();await restoreSession();});
+  async function restoreSession(){
+    let active;try{active=JSON.parse(sessionStorage.getItem(activeKey())||"null");}catch{}
+    if(active?.id)await openSession(active.id,active.parent);else await refreshSessions();
+  }
+  async function perform(isPreview){
+    if(busy||!W.validate(form))return;
+    const values=collect();
+    if(controls.protocol?.value==="chat")for(const name of toolNames)values[name]=["search","code","image_tool"].includes(name)?false:"";
+    busy=true;const unlock=W.lock(form),unlockList=W.lock(sessionsPanel);
+    controller=new AbortController();stop.disabled=false;
+    send.textContent=isPreview?actionLabels[page]:"处理中…";
+    status.replaceChildren(W.notice(isPreview?"正在构建请求预览…":"请求处理中…"));
+    if(!chat&&!isPreview)result.setAttribute("aria-busy","true");
+    try{
+      const request=await builders[vendor](page,values);let response;
+      if(chat){
+        const payload={provider_id:profile.id,operation:request.operation,params:request.params,parent_id:parent,expected_head:session?.head_id||"",revision:W.config.revision,text:values.prompt,stream:values.stream};
+        if(!isPreview&&!session)session=await W.api("/api/sessions",{method:"POST",body:JSON.stringify({profile_id:profile.id,operation:request.operation,title:values.prompt.slice(0,60)||"新会话"})});
         let liveText;
-        const onEvent=event=>{const e=event.event||{},d=e.data||{};let text="";if(e.type==="response.output_text.delta")text=d.delta||"";else if(e.type==="content_block_delta")text=d.delta?.text||"";else if(d.choices)text=d.choices.map(c=>c.delta?.content||"").join("");else if(d.candidates)text=d.candidates.flatMap(c=>c.content?.parts||[]).map(p=>p.text||"").join("");if(!text)return;if(!liveText){messages.querySelector(".empty")?.remove();liveText=el("div",{class:"message-text","data-live-text":""});messages.append(el("details",{class:"message assistant",open:true},el("summary",{},"模型 · 正在生成"),liveText));}liveText.textContent+=text;};
+        if(!isPreview){
+          remember();renderMessages();messages.querySelector(".empty")?.remove();
+          messages.append(el("details",{class:"message user",open:true},el("summary",{},"你"),el("div",{class:"message-text"},values.prompt)));
+          liveText=el("div",{class:"message-text","data-live-text":""},"等待模型响应…");
+          messages.append(el("details",{class:"message assistant",open:true},el("summary",{},"模型 · 生成中"),liveText));liveText.dataset.waiting="true";
+          messages.scrollTop=messages.scrollHeight;
+        }
+        const onEvent=event=>{
+          const e=event.event||{},data=e.data||{};let text="";
+          if(e.type==="response.output_text.delta")text=data.delta||"";
+          else if(e.type==="content_block_delta")text=data.delta?.text||"";
+          else if(data.choices)text=data.choices.map(choice=>choice.delta?.content||"").join("");
+          else if(data.candidates)text=data.candidates.flatMap(candidate=>candidate.content?.parts||[]).map(part=>part.text||"").join("");
+          if(!text||!liveText)return;
+          const atEnd=messages.scrollHeight-messages.scrollTop-messages.clientHeight<48;
+          if(liveText.dataset.waiting){liveText.textContent="";delete liveText.dataset.waiting;}
+          liveText.textContent+=text;
+          if(atEnd)messages.scrollTop=messages.scrollHeight;
+        };
         response=await W.api(`/api/sessions/${session?.id||"new"}/native${isPreview?"?preview=1":""}`,{method:"POST",body:JSON.stringify(payload),signal:controller.signal,onEvent});
       }else response=await W.native(request.operation,request.params,request.uploads,isPreview,controller.signal);
-      status.replaceChildren();if(isPreview)preview.replaceChildren(W.preview(response));else if(chat){session=response;parent=session.head_id;prompt.value="";invalidate();preview.replaceChildren();renderMessages();await refreshSessions();}else{result.replaceChildren(el("h2",{},page==="video"?"任务已提交":"结果"),W.result(response));if(page==="video"){const id=response.request_id||response.name||response.id;if(id)videoTask(input("video_id",id));}status.append(W.notice("请求已完成。"));}
-    }catch(error){status.replaceChildren(W.notice(error.name==="AbortError"?"请求已停止。已提交的云端任务不会自动取消。":error.message,true));if(chat&&session){try{for(let attempt=0;attempt<100;attempt++){session=await W.api(`/api/sessions/${session.id}`);if(!session.messages.some(item=>item.status==="pending"))break;await new Promise(resolve=>setTimeout(resolve,100));}parent=session.head_id;renderMessages();await refreshSessions();}catch(reload){W.fail(reload,status);}}}
-    finally{busy=false;send.disabled=false;previewButton.disabled=false;discover.disabled=false;for(const c of [...Object.values(controls),files,mask])c.disabled=false;stop.disabled=true;controller=null;}
+      status.replaceChildren();
+      if(isPreview){preview.replaceChildren(W.preview(response));preview.scrollIntoView({block:"nearest"});}
+      else if(chat){
+        session=response;parent=session.head_id;remember();
+        const last=session.messages.at(-1);
+        if(last?.status==="complete")prompt.value="";
+        else status.replaceChildren(W.notice(last?.error||"请求未完成，输入已保留。",true));
+        invalidate();preview.replaceChildren();renderMessages();await refreshSessions();
+      }else{
+        result.replaceChildren(el("h2",{},"结果"),W.result(response));result.removeAttribute("aria-busy");
+        if(page==="video"){const id=response.request_id||response.name||response.id;if(id)videoTask(input("video_id",id));}
+        status.replaceChildren(W.notice(page==="video"?"任务已提交，可在下方查询进度。":"已完成。"));
+        result.scrollIntoView({block:"nearest"});
+      }
+    }catch(error){
+      status.replaceChildren(W.notice(error.name==="AbortError"?"已停止等待，已收到的内容会保留。":error.message,true));
+      if(chat&&session){
+        try{
+          for(let attempt=0;attempt<100;attempt++){
+            session=await W.api(`/api/sessions/${session.id}`);
+            if(!session.messages.some(message=>message.status==="pending"))break;
+            await new Promise(resolve=>setTimeout(resolve,100));
+          }
+          parent=session.head_id;remember();renderMessages();await refreshSessions();
+        }catch(reload){W.fail(reload,status);}
+      }
+    }finally{
+      busy=false;unlock();unlockList();stop.disabled=true;controller=null;send.textContent=actionLabels[page];
+      result.removeAttribute("aria-busy");applyProtocol();if(chat)renderMessages();
+    }
   }
   form.addEventListener("submit",event=>{event.preventDefault();perform(false);});
+  prompt.addEventListener("keydown",event=>{if(chat&&!event.isComposing&&event.key==="Enter"&&(event.ctrlKey||event.metaKey)){event.preventDefault();perform(false);}});
   W.root.replaceChildren(W.heading(labels[page],`${W.vendors[vendor].name} / ${profile.name}`),chat?el("div",{class:"chat-layout"},sessionsPanel,form):form);
-  function videoTask(id){W.root.querySelector("#video-task")?.remove();W.root.append(el("section",{id:"video-task",class:"card stack"},el("h2",{},"查询视频任务"),field(vendor==="gemini"?"Operation name":"Request ID",id),button("查询状态",async()=>{try{const data=await W.native("videos.get",{video_id:id.value});result.replaceChildren(W.result(data));}catch(error){W.fail(error,status);}})));}
+  function videoTask(id){
+    W.root.querySelector("#video-task")?.remove();
+    const taskStatus=el("div",{});id.required=true;
+    const query=el("form",{id:"video-task",class:"card stack"},el("h2",{},"查询视频任务"),field(vendor==="gemini"?"Operation name":"Request ID",id),taskStatus,el("div",{class:"actions"},el("button",{type:"submit"},"查询状态")));
+    query.addEventListener("submit",async event=>{
+      event.preventDefault();if(!W.validate(query))return;const unlock=W.lock(query);taskStatus.replaceChildren(W.notice("正在查询…"));
+      try{const data=await W.native("videos.get",{video_id:id.value.trim()});taskStatus.replaceChildren(W.notice(data.done===false?"任务仍在处理中。":data.error?"任务失败，请查看结果。":"已更新任务状态。",Boolean(data.error)));result.replaceChildren(el("h2",{},"视频任务"),W.result(data));}
+      catch(error){taskStatus.replaceChildren(W.notice(error.message,true));}finally{unlock();}
+    });W.root.append(query);
+  }
+  applyProtocol();
   if(page==="video")videoTask(input("video_id"));
-  if(chat){renderMessages();await refreshSessions();}
+  if(chat){renderMessages();await restoreSession();}
  };
 })();

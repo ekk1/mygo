@@ -1,6 +1,6 @@
 # workbench 开发说明
 
-运行方式、页面能力、存储约定和测试命令见 [README](README.md)。这里仅记录维护请求处理时需要注意的内部约定。
+运行方式、页面能力、存储约定和测试命令见 [README](README.md)。这里记录页面与请求处理的内部约定。
 
 ## 代码职责
 
@@ -10,6 +10,14 @@
 - `native_transport.go`：HTTP、代理、日志、SSE、二进制下载及 Gemini 分阶段上传。
 - `conversation*.go`：原生历史分支、流式转发与结果持久化。
 - `config.go`、`store.go`：配置版本、凭据与会话存储。
+
+## 页面交互约定
+
+复用 `workbench.js` 中的字段、按钮、弹窗和结果展示；厂商参数与请求仍由各自 builder 处理。生成页遵循模型、输入、参数、结果的布局，参数宽屏侧置、窄屏后置。字段间距由 workbench 样式统一覆盖 webui 的独立表单默认值。
+
+异步操作使用 `W.action` 或 `W.lock` 恢复控件状态，弹窗提交期间同时设置 `setBusy`。`W.confirm` 返回 Promise，操作成功才关闭，失败留在弹窗内。不要在 await 之后读取 event.currentTarget，也不要把节点数组直接传给 replaceChildren；后者需要展开数组。
+
+资源分页成功后才提交游标和历史。带 attachment 的下载先按 Blob 读取，不能按 JSON 或聊天逐行协议重新解码。文字显示当前祖先路径，流式失败保留部分输出和输入草稿。
 
 ## 本地请求约定
 
