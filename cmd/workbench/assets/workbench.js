@@ -29,6 +29,8 @@
   const profileID = parts[2] && parts[2]!=="profiles" ? parts[2] : null;
   const feature = parts[2]==="profiles" ? "profiles" : parts[3] || "chat";
   const W = window.WB = {el,button,field,input,select,pretty,vendors,vendor,profileID,feature,root:document.querySelector("#app"),config:null,profile:null};
+  W.readCache=key=>{try{return JSON.parse(sessionStorage.getItem(key)||"null");}catch{return null;}};
+  W.writeCache=(key,value)=>{try{sessionStorage.setItem(key,JSON.stringify(value));}catch{}};
   W.url = (page, id = W.profile?.id) => `/ai/${vendor}/${encodeURIComponent(id)}/${page}`;
   W.heading = (name, subtitle, actions) => el("div",{class:"page-heading"},el("div",{},el("p",{class:"eyebrow"},vendor ? vendors[vendor]?.name : "PERSONAL WORKBENCH"),el("h1",{},name),el("p",{class:"muted"},subtitle)),actions);
   W.notice = (text,error=false)=>el("div",{class:`notice ${error?"error":""}`,role:error?"alert":"status"},text);
@@ -213,13 +215,14 @@
   }
   async function logs(){
     const status=el("div",{}),list=el("div",{}),search=input("log_search","","search");
-    const profile=select("log_profile",[["","全部 profiles"],...W.config.providers.map(p=>[p.id,p.name])]);let rows=[];
+    const profile=select("log_profile",[["","全部 profiles"],...W.config.providers.map(p=>[p.id,p.name])]);
+    const cached=W.readCache("wb-log-list");let loaded=Array.isArray(cached),rows=loaded?cached:[];
     const render=()=>{
       const query=search.value.trim().toLowerCase(),filtered=rows.filter(log=>(!profile.value||log.provider_id===profile.value)&&[log.operation,log.status,log.error].some(value=>String(value||"").toLowerCase().includes(query)));
       list.replaceChildren(...filtered.map(log=>el("div",{class:"log-row"},el("div",{},el("strong",{},log.operation),el("small",{class:"resource-id"},new Date(log.started_at).toLocaleString())),el("span",{},W.config.providers.find(p=>p.id===log.provider_id)?.name||log.provider_id),el("span",{class:"badge"},log.status),button("查看",()=>show(log)))));
-      if(!filtered.length)list.append(el("p",{class:"empty"},"没有匹配的请求记录。"));
+      if(!filtered.length)list.append(el("p",{class:"empty"},loaded?"没有匹配的请求记录。":"尚未加载日志，点击「刷新」读取。"));
     };
-    async function load(){status.replaceChildren(W.notice("正在读取日志…"));try{rows=await W.api("/api/logs");render();status.replaceChildren();}catch(error){status.replaceChildren(W.notice(error.message,true));}}
+    async function load(){status.replaceChildren(W.notice("正在读取日志…"));try{rows=await W.api("/api/logs");loaded=true;W.writeCache("wb-log-list",rows);render();status.replaceChildren();}catch(error){status.replaceChildren(W.notice(error.message,true));}}
     async function show(log){
       const modal=W.dialog("请求详情");modal.body.replaceChildren(W.notice("正在读取详情…"));
       try{
@@ -238,7 +241,7 @@
     const refresh=W.action("刷新",load);
     search.addEventListener("input",render);profile.addEventListener("change",render);
     W.root.replaceChildren(W.heading("请求日志","按 profile 和操作查找请求，查看完整 HTTP 记录。"),el("section",{class:"card"},el("div",{class:"resource-toolbar"},field("Profile",profile),field("搜索日志",search),refresh),status,list));
-    await load();
+    render();
   }
   async function boot(){try{W.config=await W.api("/api/config");if(vendor&&!vendors[vendor])throw new Error("服务商入口不存在");if(profileID){W.profile=W.config.providers.find(p=>p.id===profileID&&p.kind===vendor);if(!W.profile)throw new Error("此服务商下找不到这个 profile，请重新选择。");sessionStorage.setItem(`wb-profile-${vendor}`,profileID);}else if(vendor&&feature!=="profiles"){const list=W.config.providers.filter(p=>p.kind===vendor);if(list.length){const remembered=sessionStorage.getItem(`wb-profile-${vendor}`);location.replace(W.url("chat",list.find(p=>p.id===remembered)?.id||list[0].id));return;}}
       W.requestContext=Object.freeze({profileID:W.profile?.id,vendor,revision:W.config.revision});

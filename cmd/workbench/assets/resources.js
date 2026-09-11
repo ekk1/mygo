@@ -9,13 +9,17 @@
   const title=cid?"容器文件":{files:"文件",containers:"容器",batches:"Batch 任务"}[feature];
   const search=input("search");search.placeholder="搜索当前页的名称或 ID";
   const status=el("div",{}),tableBox=el("div",{class:"table-scroll"}),pager=el("div",{class:"pagination"});
-  let rows=[],cursor="",next="",previous=[],loading=false;
+  const cacheKey="wb-resources-"+JSON.stringify([vendor,profile.id,profile.base_url,W.config.revision,group,cid]);
+  const cached=W.readCache(cacheKey);
+  let loaded=Array.isArray(cached?.rows),rows=loaded?cached.rows:[],cursor=loaded?cached.cursor||"":"",next=loaded?cached.next||"":"",previous=loaded&&Array.isArray(cached.previous)?cached.previous:[],loading=false;
+  const remember=()=>{if(loaded)W.writeCache(cacheKey,{rows,cursor,next,previous});};
   const listParams=(pageCursor)=>{const params=vendor==="gemini"?{pageSize:50}:{limit:50};if(cid)params.container_id=cid;if(pageCursor){if(vendor==="anthropic"&&feature==="files")params.after_id=pageCursor;else if(vendor==="gemini")params.pageToken=pageCursor;else if(vendor==="xai")params.pagination_token=pageCursor;else if(vendor==="anthropic")params.after_id=pageCursor;else params.after=pageCursor;}return params;};
   const idOf=row=>row.id||row.batch_id||row.name;
   const withID=row=>cid?{container_id:cid,file_id:idOf(row)}:feature==="files"?{file_id:idOf(row)}:feature==="containers"?{container_id:idOf(row)}:{batch_id:idOf(row)};
   async function call(operation,params,uploads){return W.native(operation,params,uploads);}
   async function load(targetCursor=cursor,targetHistory=previous){
     if(loading)return;loading=true;refresh.disabled=true;search.disabled=true;primary.disabled=true;
+    const unlockRows=W.lock(tableBox);
     for(const control of pager.querySelectorAll("button"))control.disabled=true;
     tableBox.setAttribute("aria-busy","true");status.replaceChildren(W.notice("正在读取资源列表…"));
     try{
@@ -24,9 +28,10 @@
       if(!Array.isArray(pageRows))throw new Error("服务商返回的资源列表格式无法识别，请查看请求日志");
       rows=pageRows;cursor=targetCursor;previous=[...targetHistory];
       next=data.nextPageToken||data.next_page_token||data.pagination_token||data.next_pagination_token||data.pagination?.next_token||(data.has_more?(data.last_id||idOf(rows.at(-1)||{})):"");
+      loaded=true;remember();
       status.replaceChildren();
     }catch(error){status.replaceChildren(W.notice(error.message,true),button("重试",()=>load(targetCursor,targetHistory)));}
-    finally{loading=false;refresh.disabled=false;search.disabled=false;primary.disabled=false;tableBox.removeAttribute("aria-busy");render();}
+    finally{loading=false;refresh.disabled=false;search.disabled=false;primary.disabled=false;unlockRows();tableBox.removeAttribute("aria-busy");render();}
   }
   async function show(row){
     const modal=W.dialog("资源详情");
@@ -51,8 +56,8 @@
      if(errors)actions.push(rowButton("下载错误",()=>download("files.download",{file_id:errors},"batch-errors.jsonl")));
      if(vendor==="anthropic")actions.push(rowButton("下载结果",()=>download("batches.results",withID(row),"batch-results.jsonl")));
      if(vendor==="xai")actions.push(rowButton("查看结果",()=>xaiResults(row)),rowButton("添加请求",()=>appendBatch(row)));
-     const phase=String(row.status||row.processing_status||row.metadata?.state||row.state?.name||(typeof row.state==="string"?row.state:"")).toLowerCase();if(!/(completed|ended|cancelled|canceled|failed|expired|succeeded)/.test(phase))actions.push(rowButton("取消任务",()=>W.confirm("取消这个 Batch 任务？",async()=>{await call("batches.cancel",withID(row));await load();}),"danger"));
-   }else actions.push(rowButton("删除",()=>W.confirm(`删除「${row.filename||row.displayName||row.name||idOf(row)}」？`,async()=>{await call(group+".delete",withID(row));await load();}),"danger"));
+     const phase=String(row.status||row.processing_status||row.metadata?.state||row.state?.name||(typeof row.state==="string"?row.state:"")).toLowerCase();if(!/(completed|ended|cancelled|canceled|failed|expired|succeeded)/.test(phase))actions.push(rowButton("取消任务",()=>W.confirm("取消这个 Batch 任务？",async()=>{const data=await call("batches.cancel",withID(row));if(data&&typeof data==="object")Object.assign(row,data);remember();render();status.replaceChildren(W.notice("取消请求已提交，点击「刷新」查看最新状态。"));}),"danger"));
+   }else actions.push(rowButton("删除",()=>W.confirm(`删除「${row.filename||row.displayName||row.name||idOf(row)}」？`,async()=>{await call(group+".delete",withID(row));rows=rows.filter(item=>idOf(item)!==idOf(row));remember();render();status.replaceChildren(W.notice("已删除。点击「刷新」可重新读取列表。"));}),"danger"));
    return el("div",{class:"row-actions"},actions);
   }
   function render(){const query=search.value.trim().toLowerCase();const shown=rows.filter(row=>[row.filename,row.displayName,row.metadata?.displayName,row.name,row.id,row.batch_id,row.path].some(value=>String(value||"").toLowerCase().includes(query)));
@@ -66,19 +71,28 @@
       cells.push(el("td",{},el("span",{class:"badge"},statusText)),el("td",{},timestamp(row.created_at||row.create_time||row.createTime||row.metadata?.createTime)),el("td",{},rowActions(row)));
       return el("tr",{"data-resource-id":idOf(row)},cells);
     })));
-    tableBox.replaceChildren(table);if(!shown.length)tableBox.append(el("div",{class:"empty"},rows.length?"当前页没有匹配的资源。":"这里还没有资源。"));
+    tableBox.replaceChildren(table);if(!shown.length)tableBox.append(el("div",{class:"empty"},!loaded?"尚未加载资源列表，点击「刷新」读取。":rows.length?"当前页没有匹配的资源。":"这里还没有资源。"));
     const prev=button("上一页",()=>{if(!loading)load(previous.at(-1)||"",previous.slice(0,-1));});prev.disabled=!previous.length||loading;
     const nextButton=button("下一页",()=>{if(!loading)load(next,[...previous,cursor]);});nextButton.disabled=!next||loading;
     pager.replaceChildren(el("span",{class:"muted small"},`本页 ${shown.length} 项 · 搜索仅筛选当前页`),el("div",{class:"actions"},prev,nextButton));
   }
-  async function xaiResults(row,token="",modal=W.dialog("Batch 结果")){
-    modal.setBusy(true);
-    try{
-      const data=await call("batches.results",{batch_id:idOf(row),limit:100,...(token?{pagination_token:token}:{})});
+  function xaiResults(row){
+    const modal=W.dialog("Batch 结果"),key=cacheKey+":results:"+idOf(row),feedback=el("div",{}),output=el("div",{class:"stack"});
+    let data=W.readCache(key),busy=false;
+    const refresh=button("刷新结果",()=>loadResults());
+    const renderResults=()=>{
+      output.replaceChildren();
+      if(!data){output.append(W.notice("尚未加载结果，点击「刷新结果」读取。"));return;}
       const nextToken=data.pagination_token||data.next_pagination_token;
-      modal.body.replaceChildren(el("pre",{},pretty(data)),el("div",{class:"actions"},W.download(new Blob([pretty(data)],{type:"application/json"}),"batch-results-page.json"),nextToken?rowButton("下一页结果",()=>xaiResults(row,nextToken,modal)):null));
-    }catch(error){modal.body.replaceChildren(W.notice(error.message,true),button("重试",()=>xaiResults(row,token,modal)));}
-    finally{modal.setBusy(false);}
+      output.append(el("pre",{},pretty(data)),el("div",{class:"actions"},W.download(new Blob([pretty(data)],{type:"application/json"}),"batch-results-page.json"),nextToken?button("下一页结果",()=>loadResults(nextToken)):null));
+    };
+    async function loadResults(token=""){
+      if(busy)return;busy=true;const unlock=W.lock(modal.body);modal.setBusy(true);feedback.replaceChildren(W.notice("正在读取结果…"));
+      try{data=await call("batches.results",{batch_id:idOf(row),limit:100,...(token?{pagination_token:token}:{})});W.writeCache(key,data);renderResults();feedback.replaceChildren();}
+      catch(error){feedback.replaceChildren(W.notice(error.message,true),button("重试",()=>loadResults(token)));}
+      finally{busy=false;unlock();modal.setBusy(false);}
+    }
+    modal.body.replaceChildren(el("div",{class:"actions"},refresh),feedback,output);renderResults();
   }
   function appendBatch(row){
     const modal=W.dialog("向 Batch 添加请求"),text=el("textarea",{rows:10},'[{"batch_request_id":"request-1","batch_request":{"responses":{"model":"","input":[{"role":"user","content":"你好"}]}}}]');
@@ -89,7 +103,7 @@
       try{
         const requests=JSON.parse(text.value);if(!Array.isArray(requests)||!requests.length)throw new Error("请填写非空请求数组");
         const body={batch_id:idOf(row),batch_requests:requests},result=await W.native("batches.requests",body,{},preview);
-        if(preview)output.replaceChildren(W.preview(result));else{modal.close();await load();status.append(W.notice("请求已添加。"));}
+        if(preview)output.replaceChildren(W.preview(result));else{modal.close();status.replaceChildren(W.notice("请求已添加，点击「刷新」更新列表。"));}
       }catch(error){output.replaceChildren(W.notice(error.message,true));}
       finally{busy=false;unlock();modal.setBusy(false);}
     }
@@ -108,7 +122,20 @@
    }else if(vendor==="anthropic"){const requests=el("textarea",{rows:10,required:true},'[\n  {"custom_id":"request-1","params":{"model":"","max_tokens":1024,"messages":[{"role":"user","content":"你好"}]}}\n]');fields.push(field("Message Batch 请求数组",requests));build=()=>({operation:"batches.create",params:{requests:JSON.parse(requests.value)}});
    }else if(vendor==="gemini"){const model=input("model",profile.models?.[0]||"");model.required=true;const file=input("file_name");file.required=true;const name=input("display_name","workbench");fields.push(field("实际模型",model),field("输入文件名（files/...）",file),field("显示名称",name));build=()=>({operation:"batches.create",params:{model:model.value,batch:{display_name:name.value,input_config:{file_name:file.value}}}});
    }else if(vendor==="xai"){const name=input("name","workbench");const file=input("input_file_id");fields.push(field("任务名称",name),field("输入 JSONL 文件 ID（可选）",file,"也可以先创建空任务，再用行内「添加请求」提交。"));build=()=>({operation:"batches.create",params:{name:name.value,...(file.value?{input_file_id:file.value}:{})}});
-   }else {const file=input("input_file_id");file.required=true;file.setAttribute("list","batch-files");const choices=el("datalist",{id:"batch-files"});const endpoint=select("endpoint",["/v1/responses","/v1/chat/completions","/v1/embeddings"],"/v1/responses");fields.push(field("输入 JSONL 文件 ID",file,"先在文件页上传，purpose 选择 batch。"),choices,field("请求端点",endpoint));build=()=>({operation:"batches.create",params:{input_file_id:file.value,endpoint:endpoint.value,completion_window:"24h"}});call("files.list",{purpose:"batch",limit:100}).then(data=>choices.replaceChildren(...(data.data||[]).map(f=>el("option",{value:f.id},f.filename)))).catch(()=>{});}
+   }else {
+     const file=input("input_file_id");file.required=true;file.setAttribute("list","batch-files");
+     const choices=el("datalist",{id:"batch-files"}),key=cacheKey+":input-files",feedback=el("div",{});
+     const renderFiles=rows=>choices.replaceChildren(...rows.map(f=>el("option",{value:f.id},f.filename)));
+     const cached=W.readCache(key);if(Array.isArray(cached))renderFiles(cached);
+     const refreshFiles=W.action("刷新文件",async()=>{
+       const unlock=W.lock(modal.body);modal.setBusy(true);
+       try{const data=await call("files.list",{purpose:"batch",limit:100});if(!Array.isArray(data.data))throw new Error("服务商返回的文件列表格式无法识别");renderFiles(data.data);W.writeCache(key,data.data);feedback.replaceChildren(W.notice(`已读取 ${data.data.length} 个输入文件。`));}
+       finally{unlock();modal.setBusy(false);}
+     },"secondary",feedback);
+     const endpoint=select("endpoint",["/v1/responses","/v1/chat/completions","/v1/embeddings"],"/v1/responses");
+     fields.push(field("输入 JSONL 文件 ID",file,"可直接填写 ID，或点击「刷新文件」加载 purpose=batch 的候选文件。"),choices,el("div",{class:"actions"},refreshFiles),feedback,field("请求端点",endpoint));
+     build=()=>({operation:"batches.create",params:{input_file_id:file.value,endpoint:endpoint.value,completion_window:"24h"}});
+   }
    const extra=el("textarea",{rows:4},"{}");const out=el("div",{});const submit=el("button",{type:"submit"},"提交");const preview=button("预览请求",()=>perform(true));
    const form=el("form",{class:"stack","data-resource-editor":""},fields,el("details",{},el("summary",{},"原生扩展参数"),field("额外 JSON 字段",extra)),el("div",{class:"actions"},submit,preview),out);
    let busy=false;
@@ -120,7 +147,7 @@
        for(const [key,value]of Object.entries(extras)){if(Object.hasOwn(req.params,key))throw new Error(`重复字段 ${key}`);req.params[key]=value;}
        const data=await W.native(req.operation,req.params,req.uploads,isPreview);
        if(isPreview)out.replaceChildren(W.preview(data));
-       else{modal.close();await load("",[]);status.append(W.notice("操作已完成。"));}
+       else{modal.close();status.replaceChildren(W.notice("操作已完成，点击「刷新」更新列表。"));}
      }catch(error){out.replaceChildren(W.notice(error.message,true));}
      finally{busy=false;unlock();modal.setBusy(false);}
    }
@@ -129,6 +156,6 @@
    modal.body.replaceChildren(form);form.querySelector("input,textarea,select")?.focus();
 
   }
-  await load();
+  render();
  };
 })();

@@ -141,12 +141,14 @@ test("file manager lists, previews upload, uploads, downloads, and deletes rows"
   await page.goto(base+"/ai/openai/alpha/files");await page.getByRole("table").waitFor();await page.getByRole("button",{name:"上传文件",exact:true}).click();
   const form=page.locator("[data-resource-editor]");await form.getByLabel("文件",{exact:true}).setInputFiles({name:"sample.txt",mimeType:"text/plain",buffer:Buffer.from("browser-upload-content")});
   const before=calls.length;await form.getByRole("button",{name:"预览请求",exact:true}).click();await form.locator("[data-request-preview]").waitFor();assert.equal(calls.length,before);assert.match(await form.locator("[data-request-preview]").textContent(),/sample.txt/);
-  await form.getByRole("button",{name:"提交",exact:true}).click();const row=page.locator('[data-resource-id="file_browser"]');await row.waitFor();assert.match(await row.textContent(),/sample.txt/);
+  const fileLists=()=>calls.filter(call=>call.method==="GET"&&new URL(call.url,"http://test").pathname==="/v1/files").length;
+  const beforeUpload=fileLists();await form.getByRole("button",{name:"提交",exact:true}).click();await form.waitFor({state:"detached"});assert.equal(fileLists(),beforeUpload,"upload must not reload the list");
+  await page.getByRole("button",{name:"刷新",exact:true}).click();const row=page.locator('[data-resource-id="file_browser"]');await row.waitFor();assert.match(await row.textContent(),/sample.txt/);
   await page.getByRole("button",{name:"下一页",exact:true}).click();await page.getByText("这里还没有资源。",{exact:true}).waitFor();await page.getByRole("button",{name:"上一页",exact:true}).click();await row.waitFor();
   const [download]=await Promise.all([page.waitForEvent("download"),row.getByRole("button",{name:"下载",exact:true}).click()]);assert.equal(await fs.readFile(await download.path(),"utf8"),"browser-download-content");
-  await row.getByRole("button",{name:"删除",exact:true}).click();await page.getByRole("dialog").getByRole("button",{name:"确认",exact:true}).click();await row.waitFor({state:"detached"});
-  await page.goto(base+"/ai/openai/alpha/containers");await page.getByRole("link",{name:"打开文件"}).click();await page.locator('[data-resource-id="cfile"]').waitFor();assert.match(await page.getByRole("table").textContent(),/report.csv/);
-  await page.goto(base+"/ai/openai/alpha/batches");await page.locator('[data-resource-id="batch-browser"]').waitFor();await page.getByRole("button",{name:"取消任务"}).click();await page.getByRole("dialog").getByRole("button",{name:"确认",exact:true}).click();await page.waitForFunction(()=>!document.querySelector('[role="status"]'));
+  const beforeDelete=fileLists();await row.getByRole("button",{name:"删除",exact:true}).click();await page.getByRole("dialog").getByRole("button",{name:"确认",exact:true}).click();await row.waitFor({state:"detached"});assert.equal(fileLists(),beforeDelete,"delete updates the cached row without a list request");
+  await page.goto(base+"/ai/openai/alpha/containers");await page.getByRole("button",{name:"刷新",exact:true}).click();await page.getByRole("link",{name:"打开文件"}).click();await page.getByRole("button",{name:"刷新",exact:true}).click();await page.locator('[data-resource-id="cfile"]').waitFor();assert.match(await page.getByRole("table").textContent(),/report.csv/);
+  await page.goto(base+"/ai/openai/alpha/batches");await page.getByRole("button",{name:"刷新",exact:true}).click();await page.locator('[data-resource-id="batch-browser"]').waitFor();const beforeCancel=calls.filter(c=>c.method==="GET"&&c.url.startsWith("/v1/batches")).length;await page.getByRole("button",{name:"取消任务"}).click();await page.getByRole("dialog").getByRole("button",{name:"确认",exact:true}).click();await page.getByRole("dialog").waitFor({state:"detached"});assert.equal(calls.filter(c=>c.method==="GET"&&c.url.startsWith("/v1/batches")).length,beforeCancel);
   assert.ok(calls.some(c=>c.url==="/v1/batches/batch-browser/cancel"));
  }finally{await page.close();}
 });
@@ -178,15 +180,21 @@ test("live text arrives before completion and cancellation retains the partial a
  }finally{await page.close();}
 });
 
-test("discovery offers searchable models and selection updates the actual request",async()=>{
+test("discovery refreshes only on demand and cached selection updates the actual request",async()=>{
  const page=await browser.newPage();page.setDefaultTimeout(5000);
+ const modelCalls=()=>calls.filter(call=>new URL(call.url,"http://test").pathname.endsWith("/models")).length;
+ const before=modelCalls();
  try{
   await page.goto(base+"/ai/openai/alpha/chat");
   await page.getByLabel("实际模型",{exact:true}).fill("a-custom-model");
   await page.getByRole("button",{name:"发现模型",exact:true}).click();
   const dialog=page.getByRole("dialog",{name:"选择模型",exact:true});await dialog.waitFor();
+  await page.waitForLoadState("networkidle");assert.equal(modelCalls(),before,"opening discovery must not refresh automatically");
+  await dialog.getByRole("button",{name:"fake-chat-model",exact:true}).waitFor();
+  await dialog.getByRole("button",{name:"刷新模型",exact:true}).click();
   await dialog.getByLabel("搜索模型",{exact:true}).fill("discovered");
   await dialog.getByRole("button",{name:"discovered-model",exact:true}).waitFor();assert.equal(await page.locator("#model-catalog option").count(),2);
+  assert.equal(modelCalls(),before+1);
   await page.screenshot({path:path.join(repo,"bin/workbench-browser/model-picker.png"),fullPage:true});
   await dialog.getByRole("button",{name:"discovered-model",exact:true}).click();
   await dialog.waitFor({state:"detached"});
@@ -195,6 +203,18 @@ test("discovery offers searchable models and selection updates the actual reques
   await page.getByRole("button",{name:"预览请求",exact:true}).click();
   await page.locator("[data-request-preview]").waitFor();
   assert.match(await page.locator("[data-request-preview]").textContent(),/discovered-model/);
+  for(const reload of [false,true]){
+   if(reload)await page.reload();
+   await page.getByRole("button",{name:"发现模型",exact:true}).click();
+   await dialog.getByRole("button",{name:"discovered-model",exact:true}).waitFor();
+   await page.waitForLoadState("networkidle");assert.equal(modelCalls(),before+1,"reopening discovery uses the cached catalog");
+   await dialog.getByRole("button",{name:"关闭",exact:true}).click();
+  }
+  const config=await (await fetch(base+"/api/config")).json();config.providers.find(profile=>profile.id==="beta").models=[];
+  await page.route("**/api/config",route=>route.fulfill({json:config}));
+  await page.goto(base+"/ai/openai/beta/chat");await page.getByRole("button",{name:"发现模型",exact:true}).click();
+  await dialog.getByText("还没有模型，可刷新目录或在页面手动输入。",{exact:true}).waitFor();
+  await page.waitForLoadState("networkidle");assert.equal(modelCalls(),before+1,"an empty profile also waits for explicit refresh");
  }finally{await page.close();}
 });
 
@@ -203,6 +223,7 @@ test("resource details open a modal and Escape restores the row focus",async()=>
  const page=await browser.newPage();page.setDefaultTimeout(5000);
  try{
   await page.goto(base+"/ai/openai/alpha/files");
+  await page.getByRole("button",{name:"刷新",exact:true}).click();
   const trigger=page.locator('[data-resource-id="file_detail"]').getByRole("button",{name:"详情",exact:true});await trigger.click();
   const dialog=page.getByRole("dialog",{name:"资源详情",exact:true});await dialog.waitFor();
   await dialog.locator("pre").waitFor();
@@ -242,7 +263,7 @@ test("failed confirmation keeps its context and allows one retry",async()=>{
  const page=await browser.newPage();page.setDefaultTimeout(5000);let attempts=0;
  try{
   await page.route("**/api/native/openai/batches.cancel?*",async route=>{attempts++;await route.fulfill({status:attempts===1?500:200,contentType:"application/json",body:attempts===1?'{"error":"任务暂时不能取消"}':'{"id":"batch-browser","status":"cancelling"}'});});
-  await page.goto(base+"/ai/openai/alpha/batches");await page.getByRole("button",{name:"取消任务",exact:true}).click();
+  await page.goto(base+"/ai/openai/alpha/batches");await page.getByRole("button",{name:"刷新",exact:true}).click();await page.getByRole("button",{name:"取消任务",exact:true}).click();
   const dialog=page.getByRole("dialog");await dialog.getByRole("button",{name:"确认",exact:true}).click();
   await dialog.getByRole("alert").waitFor();assert.match(await dialog.textContent(),/任务暂时不能取消/);
   await dialog.getByRole("button",{name:"确认",exact:true}).click();await dialog.waitFor({state:"detached"});assert.equal(attempts,2);
@@ -255,6 +276,7 @@ test("JSONL downloads preserve bytes instead of entering the chat stream parser"
   await page.route("**/api/native/anthropic/batches.list?*",route=>route.fulfill({json:{data:[{id:"batch-jsonl",processing_status:"ended"}]}}));
   await page.route("**/api/native/anthropic/batches.results?*",route=>route.fulfill({contentType:"application/x-ndjson",headers:{"Content-Disposition":'attachment; filename="results.jsonl"'},body:raw}));
   await page.goto(base+"/ai/anthropic/anthropic/batches");
+  await page.getByRole("button",{name:"刷新",exact:true}).click();
   const [download]=await Promise.all([page.waitForEvent("download",{timeout:5000}),page.getByRole("button",{name:"下载结果",exact:true}).click()]);
   assert.equal(await fs.readFile(await download.path(),"utf8"),raw);
  }finally{await page.close();}
@@ -305,11 +327,12 @@ test("paging ignores rapid repeats and failures retain the current page",async()
    if(cursor&&!secondFailed){secondFailed=true;return route.fulfill({status:503,json:{error:"列表暂不可用"}});}
    await route.fulfill({json:{data:[{id:cursor?"file-page2":"file-page1",filename:cursor?"second.txt":"first.txt"}],has_more:!cursor,last_id:"file-page1"}});
   });
-  await page.goto(base+"/ai/openai/alpha/files");await page.locator('[data-resource-id="file-page1"]').waitFor();
-  await page.getByRole("button",{name:"下一页",exact:true}).evaluate(button=>{button.click();button.click();});
+  await page.goto(base+"/ai/openai/alpha/files");await page.getByRole("button",{name:"刷新",exact:true}).click();await page.locator('[data-resource-id="file-page1"]').waitFor();
+  assert.equal(await page.getByRole("button",{name:"下一页",exact:true}).evaluate(button=>{button.click();button.click();return document.querySelector(".row-actions button.danger").disabled;}),true,"row operations wait until the refreshed list is ready");
   await page.getByRole("alert").waitFor();assert.equal(await page.locator('[data-resource-id="file-page1"]').count(),1);
   assert.equal(await page.getByRole("button",{name:"上一页",exact:true}).isDisabled(),true);
   await page.getByRole("button",{name:"重试",exact:true}).click();await page.locator('[data-resource-id="file-page2"]').waitFor();
+  await page.reload();await page.locator('[data-resource-id="file-page2"]').waitFor();await page.waitForLoadState("networkidle");assert.equal(cursors.length,3,"cached page restores its cursor without loading");
   await page.getByRole("button",{name:"上一页",exact:true}).click();await page.locator('[data-resource-id="file-page1"]').waitFor();
   assert.deepEqual(cursors,["","file-page1","file-page1",""]);
  }finally{await page.close();}
@@ -319,7 +342,7 @@ test("logs show actual HTTP bodies and offer complete truncated downloads",async
  const page=await browser.newPage();try{
   await page.route("**/api/logs",route=>route.fulfill({json:[{id:"log-fixture",operation:"files.upload",provider_id:"alpha",status:"error",started_at:"2026-09-11T12:00:00Z"}]}));
   await page.route("**/api/logs/log-fixture",route=>route.fulfill({json:{metadata:{save_response:true},requests:[{id:"req-fixture",request:{method:"POST",url:"http://fake/upload"},response:{status_code:503},request_body:"request fixture bytes",response_body:"response fixture bytes",response_truncated:true}]}}));
-  await page.goto(base+"/logs");await page.getByRole("button",{name:"查看",exact:true}).click();
+  await page.goto(base+"/logs");await page.getByRole("button",{name:"刷新",exact:true}).click();await page.getByRole("button",{name:"查看",exact:true}).click();
   const modal=page.getByRole("dialog",{name:"请求详情",exact:true});await modal.getByText("response fixture bytes",{exact:true}).waitFor();
   assert.match(await modal.textContent(),/503/);assert.match(await modal.textContent(),/响应正文预览已截断/);
   assert.equal(await modal.getByRole("link",{name:"下载完整响应正文",exact:true}).count(),1);
@@ -359,6 +382,7 @@ test("switching compatible profiles falls back to an available page",async()=>{
 
 test("every provider page uses the same usable desktop and mobile structure",async t=>{
  const page=await browser.newPage({viewport:{width:1440,height:900}});let checked=0;
+ const listRequests=[];page.on("request",request=>{if(/\/api\/native\/[^/]+\/[^?]+\.list\?|\/api\/sessions\?/.test(request.url()))listRequests.push(request.url());});
  const pending=new Set();page.on("request",request=>pending.add(request.url()));page.on("requestfinished",request=>pending.delete(request.url()));page.on("requestfailed",request=>pending.delete(request.url()));
  const groups={openai:["chat","image","image-edit","speech","transcribe","translate","files","containers","batches"],anthropic:["chat","files","batches"],gemini:["chat","image","image-edit","speech","transcribe","video","files","batches"],xai:["chat","image","image-edit","speech","transcribe","video","files","batches"],compatible:["chat","image","image-edit","speech","transcribe","translate","files","containers","batches"]};
  try{
@@ -388,6 +412,7 @@ test("every provider page uses the same usable desktop and mobile structure",asy
    }
   }
   assert.equal(checked,74);
+  await page.waitForLoadState("networkidle");assert.deepEqual(listRequests,[],"entering any provider page must not automatically fetch lists");
  }finally{await page.close();}
 });
 
@@ -413,8 +438,78 @@ test("download filenames containing percent signs stay usable",async()=>{
 test("Gemini empty resource pages accept omitted repeated fields",async()=>{
  const page=await browser.newPage();try{
   await page.route("**/api/native/gemini/files.list?*",route=>route.fulfill({json:{}}));
-  await page.goto(base+"/ai/gemini/gemini/files");await page.getByText("这里还没有资源。",{exact:true}).waitFor();
+  await page.goto(base+"/ai/gemini/gemini/files");await page.getByRole("button",{name:"刷新",exact:true}).click();await page.getByText("这里还没有资源。",{exact:true}).waitFor();
   assert.equal(await page.getByRole("alert").count(),0);
+ }finally{await page.close();}
+});
+
+test("resource lists stay cached until refreshed, including container files",async()=>{
+ const page=await browser.newPage();let requests=0;
+ try{
+  await page.route("**/api/native/openai/*.list?*",route=>{requests++;return route.fulfill({json:{data:[{id:"cached-item",filename:"cached.txt",name:"cached resource"}],has_more:false}});});
+  for(const feature of ["files","containers","containers?container=cache-container","batches"]){
+   const before=requests;
+   await page.goto(base+"/ai/openai/alpha/"+feature);await page.getByRole("table").waitFor();await page.waitForLoadState("networkidle");
+   assert.equal(requests,before,"opening "+feature+" must not request its list");
+   await page.getByText("尚未加载资源列表，点击「刷新」读取。",{exact:true}).waitFor();
+   await page.getByRole("button",{name:"刷新",exact:true}).click();await page.locator('[data-resource-id="cached-item"]').waitFor();
+   assert.equal(requests,before+1);
+   await page.reload();await page.locator('[data-resource-id="cached-item"]').waitFor();await page.waitForLoadState("networkidle");
+   assert.equal(requests,before+1,"returning to "+feature+" must reuse its cache");
+   if(feature==="batches"){
+    await page.getByRole("button",{name:"创建 Batch",exact:true}).click();await page.waitForLoadState("networkidle");
+    assert.equal(requests,before+1,"opening the Batch editor must not fetch file choices");
+    await page.getByRole("dialog").getByRole("button",{name:"刷新文件",exact:true}).click();
+    await page.waitForFunction(()=>document.querySelector("#batch-files option")?.value==="cached-item");assert.equal(requests,before+2);
+   }
+  }
+  await page.goto(base+"/ai/openai/alpha/chat");await page.getByRole("button",{name:"发现模型",exact:true}).click();
+  await page.getByRole("dialog").getByRole("button",{name:"刷新模型",exact:true}).click();await page.getByRole("button",{name:"cached-item",exact:true}).waitFor();
+  const config=await (await fetch(base+"/api/config")).json();config.providers.find(profile=>profile.id==="alpha").api_key="replacement-test-key";
+  const saved=await fetch(base+"/api/config",{method:"PUT",headers:{"Content-Type":"application/json","X-Workbench-Request":"1"},body:JSON.stringify(config)});assert.equal(saved.status,200);
+  const before=requests;
+  await page.reload();await page.getByRole("button",{name:"发现模型",exact:true}).click();await page.waitForLoadState("networkidle");
+  assert.equal(await page.getByRole("dialog").getByRole("button",{name:"cached-item",exact:true}).count(),0,"credential changes invalidate the discovered models");
+  await page.goto(base+"/ai/openai/alpha/files");await page.getByText("尚未加载资源列表，点击「刷新」读取。",{exact:true}).waitFor();await page.waitForLoadState("networkidle");
+  assert.equal(requests,before,"credential changes clear resource caches without automatically loading them");
+ }finally{await page.close();}
+});
+
+test("logs and conversation lists load only on explicit refresh",async()=>{
+ const page=await browser.newPage();let logRequests=0,sessionRequests=0;
+ try{
+  await page.route("**/api/logs",route=>{logRequests++;return route.fulfill({json:[]});});
+  await page.route("**/api/sessions?*",route=>{sessionRequests++;return route.fulfill({json:[]});});
+  await page.goto(base+"/logs");await page.getByRole("button",{name:"刷新",exact:true}).waitFor();await page.waitForLoadState("networkidle");
+  assert.equal(logRequests,0);await page.getByRole("button",{name:"刷新",exact:true}).click();await page.waitForLoadState("networkidle");assert.equal(logRequests,1);
+  await page.reload();await page.getByRole("button",{name:"刷新",exact:true}).waitFor();await page.waitForLoadState("networkidle");assert.equal(logRequests,1);
+  await page.goto(base+"/ai/openai/beta/chat");await page.getByRole("button",{name:"新建会话",exact:true}).waitFor();await page.waitForLoadState("networkidle");assert.equal(sessionRequests,0);
+  await page.getByRole("button",{name:"刷新会话",exact:true}).click();await page.waitForLoadState("networkidle");assert.equal(sessionRequests,1);
+  await page.getByLabel("消息",{exact:true}).fill("keep session list local");await page.getByRole("button",{name:"发送",exact:true}).click();
+  await page.waitForFunction(()=>!document.querySelector(".composer button[type=submit]").disabled);assert.equal(sessionRequests,1);
+  assert.match(await page.locator(".session-list").textContent(),/keep session list local/);
+  await page.reload();await page.locator(".session-item").first().waitFor();await page.waitForLoadState("networkidle");assert.equal(sessionRequests,1);
+  await page.locator(".session-item").getByRole("button",{name:"管理",exact:true}).click();await page.getByRole("dialog").getByRole("button",{name:"重命名",exact:true}).click();
+  await page.getByLabel("会话名称",{exact:true}).fill("renamed cached conversation");await page.getByRole("button",{name:"保存名称",exact:true}).click();
+  await page.locator(".session-item").getByRole("button",{name:"renamed cached conversation",exact:true}).waitFor();assert.equal(sessionRequests,1);
+  await page.locator(".session-item").getByRole("button",{name:"管理",exact:true}).click();await page.getByRole("dialog").getByRole("button",{name:"删除会话",exact:true}).click();
+  await page.getByRole("dialog").getByRole("button",{name:"确认",exact:true}).click();await page.locator(".session-item").waitFor({state:"detached"});assert.equal(sessionRequests,1);
+ }finally{await page.close();}
+});
+
+test("xAI Batch result lists refresh explicitly and reuse cached pages",async()=>{
+ const page=await browser.newPage();let resultRequests=0;
+ try{
+  await page.route("**/api/native/xai/batches.list?*",route=>route.fulfill({json:{data:[{id:"result-batch",status:"completed"}]}}));
+  await page.route("**/api/native/xai/batches.results?*",route=>{resultRequests++;const next=route.request().postDataJSON().params.pagination_token;return route.fulfill({json:next?{results:[{id:"result-two"}]}:{results:[{id:"result-one"}],pagination_token:"next-page"}});});
+  await page.goto(base+"/ai/xai/xai/batches");await page.getByRole("button",{name:"刷新",exact:true}).click();
+  await page.getByRole("button",{name:"查看结果",exact:true}).click();const modal=page.getByRole("dialog");
+  await page.waitForLoadState("networkidle");assert.equal(resultRequests,0);
+  await modal.getByRole("button",{name:"刷新结果",exact:true}).click();await modal.getByRole("button",{name:"下一页结果",exact:true}).waitFor();
+  assert.match(await modal.locator("pre").textContent(),/result-one/);assert.equal(resultRequests,1);
+  await modal.getByRole("button",{name:"下一页结果",exact:true}).click();await modal.getByRole("button",{name:"下一页结果",exact:true}).waitFor({state:"detached"});assert.match(await modal.locator("pre").textContent(),/result-two/);
+  await modal.getByRole("button",{name:"关闭",exact:true}).click();await page.reload();await page.getByRole("button",{name:"查看结果",exact:true}).click();
+  await page.waitForLoadState("networkidle");assert.equal(resultRequests,2);assert.match(await modal.locator("pre").textContent(),/result-two/);
  }finally{await page.close();}
 });
 

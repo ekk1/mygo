@@ -68,7 +68,7 @@
   const draftKey=`wb-draft-${profile.id}-${page}`;let draft={};try{draft=JSON.parse(sessionStorage.getItem(draftKey)||"{}");}catch{}
   const controls={};const defaultModel={openai:{image:"gpt-image-1", "image-edit":"gpt-image-1",speech:"gpt-4o-mini-tts",transcribe:"gpt-4o-transcribe",translate:"whisper-1"},gemini:{image:"gemini-2.5-flash-image","image-edit":"gemini-2.5-flash-image",speech:"gemini-2.5-flash-preview-tts"},xai:{image:"grok-imagine-image","image-edit":"grok-imagine-image",video:"grok-imagine-video"}};
   const model=input("model",draft.model||defaultModel[vendor]?.[page]||profile.models?.[0]||"");model.setAttribute("list","model-catalog");model.required=!(vendor==="xai"&&["speech","transcribe"].includes(page));controls.model=model;
-  const catalogKey=`wb-models-${profile.id}-${profile.base_url}`;
+  const catalogKey="wb-models-"+JSON.stringify([profile.id,profile.base_url,W.config.revision]);
   let modelIDs=[...(profile.models||[])];
   try{const saved=JSON.parse(sessionStorage.getItem(catalogKey)||"null");if(Array.isArray(saved))modelIDs=[...new Set([...modelIDs,...saved.filter(id=>typeof id==="string")])];}catch{}
   const catalog=el("datalist",{id:"model-catalog"});
@@ -99,7 +99,7 @@
     search.addEventListener("input",render);
     modal.dialog.addEventListener("close",()=>controller.abort(),{once:true});
     modal.body.replaceChildren(el("div",{class:"model-search"},field("搜索模型",search),refresh),info,list);
-    render();search.focus();refresh.click();
+    render();search.focus();
   });
   const actionLabels={chat:"发送",image:"生成图片","image-edit":"编辑图片",speech:"合成语音",transcribe:"开始转写",translate:"翻译音频",video:"提交视频任务"};
   const promptLabels={chat:"消息",speech:"要朗读的文本",transcribe:"转写提示（可选）",translate:"翻译提示（可选）",video:"视频描述"};
@@ -156,8 +156,21 @@
     chat?messages:null,composer,configuration,preview,chat?null:result);
   let session=null,parent="";
   const sessionsPanel=el("aside",{class:"card session-panel"});
+  const sessionStatus=el("div",{class:"small"});let sessionList=[],sessionListLoaded=false;
   const operationForChat=()=>vendor==="anthropic"?"messages.create":vendor==="gemini"?"content.generate":controls.protocol?.value==="chat"?"chat.create":"responses.create";
   const activeKey=()=>`wb-session-${profile.id}-${operationForChat()}`;
+  const sessionListKey=()=>`wb-session-list-${profile.id}-${operationForChat()}`;
+  const saveSessionList=()=>W.writeCache(sessionListKey(),{rows:sessionList,loaded:sessionListLoaded});
+  function updateSessionList(item=session){
+    if(item){
+      const {id,title,profile_id,operation,updated_at}=item;
+      if(profile_id===profile.id&&operation===operationForChat()){
+        sessionList=[{id,title,profile_id,operation,updated_at},...sessionList.filter(row=>row.id!==id)].sort((a,b)=>String(b.updated_at).localeCompare(String(a.updated_at)));
+        saveSessionList();
+      }
+    }
+    renderSessions();
+  }
   const remember=()=>{try{if(session)sessionStorage.setItem(activeKey(),JSON.stringify({id:session.id,parent}));else sessionStorage.removeItem(activeKey());}catch{}};
   function applyProtocol(){
     const incompatible=controls.protocol?.value==="chat";
@@ -203,8 +216,8 @@
         if(busy)return;busy=true;const unlock=W.lock(form),unlockList=W.lock(sessionsPanel);
         try{
           session=await W.api(`/api/sessions/${session.id}/fork`,{method:"POST",body:JSON.stringify({node_id:message.id})});
-          parent=session.head_id;remember();invalidate();renderMessages();await refreshSessions();
-        }finally{busy=false;unlock();unlockList();applyProtocol();renderMessages();}
+          parent=session.head_id;remember();invalidate();renderMessages();updateSessionList();
+        }finally{busy=false;unlock();unlockList();applyProtocol();renderMessages();renderSessions();}
       },"quiet",status);
       branch.disabled=busy;fork.disabled=busy;
       node.append(el("div",{class:"message-meta"},message.text?W.copyButton(message.text):null,branch,fork));messages.append(node);
@@ -220,7 +233,7 @@
       remember();invalidate();renderMessages(true);
     }catch(error){W.fail(error,status);}
     finally{busy=false;unlock();unlockList();applyProtocol();renderMessages();}
-    await refreshSessions();
+    updateSessionList();
   }
   function renameSession(item){
     const modal=W.dialog("重命名会话"),name=input("session_title",item.title);name.required=true;name.maxLength=120;
@@ -228,31 +241,42 @@
     const editor=el("form",{class:"stack"},field("会话名称",name),feedback,el("div",{class:"actions"},el("button",{type:"submit"},"保存名称")));
     editor.addEventListener("submit",async event=>{
       event.preventDefault();if(!W.validate(editor))return;const unlock=W.lock(editor);modal.setBusy(true);
-      try{await W.api(`/api/sessions/${item.id}`,{method:"PATCH",body:JSON.stringify({title:name.value.trim()})});modal.close();await refreshSessions();}
+      try{const updated=await W.api(`/api/sessions/${item.id}`,{method:"PATCH",body:JSON.stringify({title:name.value.trim()})});if(session?.id===item.id)session.title=updated.title;modal.close();updateSessionList(updated);}
       catch(error){feedback.replaceChildren(W.notice(error.message,true));}
       finally{unlock();modal.setBusy(false);}
     });modal.body.append(editor);name.focus();name.select();
   }
   async function refreshSessions(){
+    if(busy)return;busy=true;const unlock=W.lock(form),unlockList=W.lock(sessionsPanel);sessionStatus.replaceChildren(W.notice("正在读取会话列表…"));
     try{
-      const list=(await W.api(`/api/sessions?profile_id=${encodeURIComponent(profile.id)}`)).filter(item=>item.operation===operationForChat());
-      sessionsPanel.replaceChildren(el("div",{class:"section-head"},el("h2",{},"会话"),button("新建会话",()=>{if(busy)return;session=null;parent="";remember();invalidate();renderMessages();refreshSessions();prompt.focus();},"quiet")),
-        ...(!list.length?[el("p",{class:"small muted"},"发送第一条消息后，会话会自动保存。")]:[]),
-        el("div",{class:"session-list"},list.map(item=>el("div",{class:`session-item ${session?.id===item.id?"active":""}`},
-          button(item.title,()=>openSession(item.id),"quiet"),
-          W.action("管理",async()=>{if(busy)return;const modal=W.dialog(item.title);modal.body.append(el("div",{class:"actions"},
-            button("重命名",()=>{modal.close();renameSession(item);}),
-            button("删除会话",()=>{modal.close();W.confirm(`删除会话「${item.title}」？`,async()=>{
-              await W.api(`/api/sessions/${item.id}`,{method:"DELETE"});
-              if(session?.id===item.id){session=null;parent="";remember();renderMessages();}await refreshSessions();
-            },"只删除本地会话，不影响云端资源。");},"danger")));},"quiet",status)))));
-    }catch(error){W.fail(error,sessionsPanel);}
+      sessionList=(await W.api(`/api/sessions?profile_id=${encodeURIComponent(profile.id)}`)).filter(item=>item.operation===operationForChat());
+      sessionListLoaded=true;saveSessionList();sessionStatus.replaceChildren();
+    }catch(error){sessionStatus.replaceChildren(W.notice(error.message,true));}
+    finally{busy=false;unlock();unlockList();applyProtocol();renderSessions();}
+  }
+  function renderSessions(){
+    const fresh=button("新建会话",()=>{if(busy)return;session=null;parent="";remember();invalidate();renderMessages();renderSessions();prompt.focus();},"quiet");fresh.disabled=busy;
+    const refresh=button("刷新",refreshSessions,"quiet");refresh.setAttribute("aria-label","刷新会话");refresh.disabled=busy;
+    sessionsPanel.replaceChildren(el("div",{class:"section-head"},el("h2",{},"会话"),el("div",{class:"actions"},refresh,fresh)),sessionStatus,
+      ...(!sessionList.length?[el("p",{class:"small muted"},sessionListLoaded?"这里还没有会话，发送第一条消息后会自动保存。":"尚未加载会话列表，点击「刷新会话」读取。")]:[]),
+      el("div",{class:"session-list"},sessionList.map(item=>{
+        const open=button(item.title,()=>openSession(item.id),"quiet");open.disabled=busy;
+        const manage=W.action("管理",async()=>{if(busy)return;const modal=W.dialog(item.title);modal.body.append(el("div",{class:"actions"},
+          button("重命名",()=>{modal.close();renameSession(item);}),
+          button("删除会话",()=>{modal.close();W.confirm(`删除会话「${item.title}」？`,async()=>{
+            await W.api(`/api/sessions/${item.id}`,{method:"DELETE"});
+            sessionList=sessionList.filter(row=>row.id!==item.id);saveSessionList();
+            if(session?.id===item.id){session=null;parent="";remember();renderMessages();}renderSessions();
+          },"只删除本地会话，不影响云端资源。");},"danger")));},"quiet",status);manage.disabled=busy;
+        return el("div",{class:`session-item ${session?.id===item.id?"active":""}`},open,manage);
+      })));
   }
   form.addEventListener("input",invalidate);form.addEventListener("change",invalidate);
   controls.protocol?.addEventListener("change",async()=>{session=null;parent="";applyProtocol();renderMessages();await restoreSession();});
   async function restoreSession(){
+    const cached=W.readCache(sessionListKey());sessionList=Array.isArray(cached?.rows)?cached.rows:[];sessionListLoaded=cached?.loaded===true;sessionStatus.replaceChildren();renderSessions();
     let active;try{active=JSON.parse(sessionStorage.getItem(activeKey())||"null");}catch{}
-    if(active?.id)await openSession(active.id,active.parent);else await refreshSessions();
+    if(active?.id)await openSession(active.id,active.parent);
   }
   async function perform(isPreview){
     if(busy||!W.validate(form))return;
@@ -297,7 +321,7 @@
         const last=session.messages.at(-1);
         if(last?.status==="complete")prompt.value="";
         else status.replaceChildren(W.notice(last?.error||"请求未完成，输入已保留。",true));
-        invalidate();preview.replaceChildren();renderMessages();await refreshSessions();
+        invalidate();preview.replaceChildren();renderMessages();updateSessionList();
       }else{
         result.replaceChildren(el("h2",{},"结果"),W.result(response));result.removeAttribute("aria-busy");
         if(page==="video"){const id=response.request_id||response.name||response.id;if(id)videoTask(input("video_id",id));}
@@ -313,12 +337,12 @@
             if(!session.messages.some(message=>message.status==="pending"))break;
             await new Promise(resolve=>setTimeout(resolve,100));
           }
-          parent=session.head_id;remember();renderMessages();await refreshSessions();
+          parent=session.head_id;remember();renderMessages();updateSessionList();
         }catch(reload){W.fail(reload,status);}
       }
     }finally{
       busy=false;unlock();unlockList();stop.disabled=true;controller=null;send.textContent=actionLabels[page];
-      result.removeAttribute("aria-busy");applyProtocol();if(chat)renderMessages();
+      result.removeAttribute("aria-busy");applyProtocol();if(chat){renderMessages();renderSessions();}
     }
   }
   form.addEventListener("submit",event=>{event.preventDefault();perform(false);});
