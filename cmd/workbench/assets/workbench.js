@@ -194,7 +194,7 @@
     const status = message.status === "complete" ? "完成" : ({ pending: "生成中", error: "失败", cancelled: "已取消" }[message.status] || message.status);
     const generated = generatedImages(message.output);
     details.append(el("summary", {}, el("strong", {}, message.role === "user" ? "你" : "助手"), el("span", { class: "badge" }, status), el("span", {}, time(message.created_at))),
-      el("div", { class: "message-text" }, message.text || ""), generated.length ? el("div", { class: "generated-assets" }, ...generated.map((src, index) => el("img", { src, alt: `生成图片 ${index + 1}`, loading: "lazy" }))) : null,
+      el("div", { class: "message-text" }, message.text || ""), generated.length ? el("div", { class: "generated-assets" }, ...generated.map((src, index) => el("img", { src, alt: `生成图片 ${index + 1}`, loading: "lazy" }))) : document.createDocumentFragment(),
       el("div", { class: "message-meta" },
         message.model_id ? el("span", {}, state.config.models.find(model => model.id === message.model_id)?.name || "已删除的逻辑模型") : null,
         message.provider_id ? el("details", {}, el("summary", {}, "线路详情"), el("span", {}, `${message.provider_id} · ${message.actual_model || ""} · ${message.protocol || ""}`)) : null,

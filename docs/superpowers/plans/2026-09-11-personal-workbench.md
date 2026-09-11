@@ -8,7 +8,7 @@
 **Spec:** ../specs/2026-09-11-personal-workbench-design.md
 
 ## Global Constraints
-- 不安装工具或依赖；复用已存在 Go/Node/Chromium，测试禁止下载。
+- 复用已有 Go/Node/Chromium；用户后续明确授权 27 个 Debian 浏览器依赖包，已下载解包到任务临时目录。测试本身禁止下载。
 - 工作在 /tmp/mygo-workbench，完成后合入 main 并推送 origin/main。
 - Go 测试与浏览器仅使用本地假服务；日志必须写入成功才能执行请求。
 
@@ -27,15 +27,15 @@
 - [x] pages.go 使用 webui.Render 生成导航与页面骨架，embed 应用 CSS/JS。
 - [x] 配置页 provider/key/catalog、逻辑模型和多线路；工作台会话/模型/工具/参数/折叠/分支/流式。
 - [x] 资源页 Files、Containers、Batch 与原生操作表单；日志页 metadata/body 查看和响应记录开关。
-- [ ] 浏览器脚本已编写并尝试执行；JS 检查通过。Chromium 缺少 libcups/Cairo/Pango，启动钩子失败，桌面/手机截图目视验收待补。
+- [x] 6 项浏览器测试通过，覆盖真实页面交互、资源上传下载、原生 JSON、四套主题明暗模式与手机布局；桌面/手机截图已目视检查。
 
 ## 任务 4：集成审查与发布
 - [x] 独立代码审查并修复实际缺陷；补充 cmd/workbench/README.md、根 README 和 .gitignore。
 - [x] GOTOOLCHAIN=local GOPROXY=off go fmt ./...; go test ./...; go vet ./...; go build -o ./bin/ ./...; go test -race ./...。
 - [x] Node 请求测试通过；浏览器尝试启动失败，已记录依赖限制，未伪报通过。
-- [ ] 取得安装授权后补跑工作台浏览器交互与目视验收。
+- [x] 取得安装授权后补跑浏览器交互与目视验收，保持 sandbox 开启，退出和清理成功。
 - [x] 已检查差异，提交实现 055563b，fast-forward main，push origin main 并核对远端提交；包含前置 OpenAI 客户端提交 e6df0cf。
 
 ## 交付说明
 
-实现覆盖逻辑模型多线路映射、原生对话工具、分支/折叠、38 项资源操作、强制请求日志、可选响应正文与独立 KV。审查修复了退出等待、原生上下文跨模型/取消恢复、删除竞态、JSON 编码状态、原生扩展字段丢失、界面草稿丢失等缺陷。Go 和 JS 请求验证通过；浏览器验证受缺少系统依赖且尚无安装授权阻塞。按用户要求提交推送代码供另一台机器构建，同时保留此未验收项。
+实现覆盖逻辑模型多线路映射、原生对话工具、分支/折叠、38 项资源操作、强制请求日志、可选响应正文与独立 KV。审查修复了退出等待、原生上下文跨模型/取消恢复、删除竞态、JSON 编码状态、原生扩展字段丢失、界面草稿丢失等缺陷。Go 和 JS 请求验证通过；用户授权依赖后，6 项浏览器测试和截图目视验收也已完成，修复了消息 null、输入区遮挡、会话按钮溢出及深色/手机可读性问题。

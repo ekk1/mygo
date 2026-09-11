@@ -46,6 +46,22 @@ before(async () => {
       response.write('event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"<b>安全文本</b>"}\n\n');
       response.end('event: response.completed\ndata: {"type":"response.completed","response":{"id":"resp_fake","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"来自假服务的 <b>安全文本</b>"}]}]}}\n\n'); return;
     }
+    if (request.method === "POST" && request.url === "/v1/files") {
+      assert.match(request.headers["content-type"], /multipart\/form-data/);
+      assert.match(Buffer.concat(chunks).toString("utf8"), /browser-upload-content/);
+      response.writeHead(200, {"Content-Type":"application/json"}); response.end('{"id":"file_browser","filename":"sample.txt","purpose":"assistants"}'); return;
+    }
+    if (request.method === "GET" && request.url === "/v1/files/file_browser/content") {
+      response.writeHead(200, {"Content-Type":"application/octet-stream"}); response.end("browser-download-content"); return;
+    }
+    if (request.method === "POST" && request.url === "/v1/containers") {
+      const body = JSON.parse(Buffer.concat(chunks)); assert.equal(body.memory_limit, "4g");
+      response.writeHead(200, {"Content-Type":"application/json"}); response.end('{"id":"cntr_browser","name":"browser-container"}'); return;
+    }
+    if (request.method === "POST" && request.url === "/v1/batches") {
+      const body = JSON.parse(Buffer.concat(chunks)); assert.equal(body.input_file_id, "file_browser");
+      response.writeHead(200, {"Content-Type":"application/json"}); response.end('{"id":"batch_browser","status":"validating"}'); return;
+    }
     response.writeHead(404, { "Content-Type": "application/json" }); response.end('{"error":{"message":"fake endpoint missing"}}');
   });
   provider.baseURL = `http://127.0.0.1:${await listen(provider)}/v1`;
@@ -123,8 +139,12 @@ test("real streaming conversation stays inert, collapses, forks, and produces in
     assert.equal(await page.getByLabel("系统指令").inputValue(), "保持简洁"); assert.equal(await page.getByLabel("原生 JSON options").inputValue(), '{"temperature":0}');
     assert.equal(await page.locator(".message-text b").count(), 0, "model output must not become HTML");
     assert.equal(providerCalls, 1, "a double click must dispatch one provider request");
-    let assistant = page.locator("details.message.assistant").last(); await assistant.locator("summary").click(); assert.equal(await assistant.getAttribute("open"), null);
-    await page.locator(".session-item.active button").first().click(); assistant = page.locator("details.message.assistant").last(); assert.equal(await assistant.getAttribute("open"), null, "collapse state survives rerender"); await assistant.locator("summary").click();
+    await page.locator("details.message.assistant").last().waitFor();
+    assert.equal(await page.locator("details.message").evaluateAll(messages => messages.some(message => [...message.childNodes].some(node => node.nodeType === Node.TEXT_NODE && node.textContent.trim() === "null"))), false, "absent generated images must not render a null text node");
+    const messageBox = await page.locator("#messages").boundingBox(); const composerBox = await page.locator(".composer").boundingBox();
+    assert.ok(composerBox.y >= messageBox.y + messageBox.height, "composer must not cover message content");
+    let assistant = page.locator("details.message.assistant").last(); await assistant.locator(":scope > summary").click(); assert.equal(await assistant.getAttribute("open"), null);
+    await page.locator(".session-item.active button").first().click(); assistant = page.locator("details.message.assistant").last(); assert.equal(await assistant.getAttribute("open"), null, "collapse state survives rerender"); await assistant.locator(":scope > summary").click();
     await assistant.getByRole("button", { name: "复制为新会话" }).click(); await page.locator(".session-item.active").filter({ hasText: "分支" }).waitFor();
     await page.getByLabel("消息").fill("失败后保留这份草稿"); await page.getByText("工具版本与原生参数", { exact: true }).click(); await page.getByLabel("原生 JSON options").fill('{"temperature":0.2}');
     await page.route("**/api/sessions/**", route => {
@@ -137,7 +157,7 @@ test("real streaming conversation stays inert, collapses, forks, and produces in
     assert.equal(await page.getByRole("button", { name: "新建会话" }).isEnabled(), true); assert.equal(await page.locator(".session-item.active button").first().isEnabled(), true);
     await page.unroute("**/api/sessions/**");
     await page.getByRole("link", { name: "请求日志", exact: true }).click(); await page.getByText("responses.stream", { exact: true }).waitFor();
-    await page.getByRole("button", { name: "查看" }).last().click(); await page.getByRole("heading", { name: "Request body" }).waitFor();
+    await page.locator(".log-row").filter({ hasText: "responses.stream" }).first().getByRole("button", { name: "查看" }).click(); await page.getByRole("heading", { name: "Request body" }).waitFor();
     assert.match(await page.locator("#log-detail").textContent(), /fake-chat-model/);
     assert.ok(await page.getByRole("link", { name: /下载(完整|原始)请求正文/ }).count(), "raw request download is always available");
   } finally { await page.close(); }
@@ -154,4 +174,55 @@ test("resource catalog is rendered into usable forms at narrow width", async () 
     await page.screenshot({ path: "/tmp/mygo-workbench-ui-mobile.png", fullPage: true });
     await page.setViewportSize({ width: 1440, height: 1000 }); await page.goto(base + "/"); await page.getByLabel("对话模型").waitFor(); await page.waitForFunction(() => [...document.styleSheets].some(sheet => sheet.href?.endsWith("/assets/workbench.css"))); await page.screenshot({ path: "/tmp/mygo-workbench-ui-desktop.png", fullPage: true });
   } finally { await page.close(); }
+});
+
+
+test("resource forms upload, download, and submit complete native JSON", async () => {
+  const page = await browser.newPage();
+  try {
+    await page.goto(base + "/files");
+    const upload = page.locator('form[data-operation="files.upload"]');
+    await upload.getByLabel("服务商").selectOption({label:"本地假服务"});
+    await upload.locator('input[type="file"]').setInputFiles({name:"sample.txt",mimeType:"text/plain",buffer:Buffer.from("browser-upload-content")});
+    await upload.getByRole("button",{name:"执行操作"}).click();
+    await upload.locator(".operation-output").filter({hasText:"file_browser"}).waitFor();
+    const download = page.locator('form[data-operation="files.download"]');
+    await download.getByLabel("服务商").selectOption({label:"本地假服务"});
+    await download.locator('[name="file_id"]').fill("file_browser");
+    await download.getByRole("button",{name:"执行并下载"}).click();
+    const [file] = await Promise.all([page.waitForEvent("download"),download.getByRole("link",{name:"保存下载"}).click()]);
+    assert.equal(await fs.readFile(await file.path(),"utf8"),"browser-download-content");
+    for (const [route,operation,params,result] of [
+      ["containers","containers.create",{name:"browser-container",memory_limit:"4g"},"cntr_browser"],
+      ["batches","batches.create",{input_file_id:"file_browser",endpoint:"/v1/responses",completion_window:"24h"},"batch_browser"],
+    ]) {
+      await page.goto(base + "/" + route);const form = page.locator(`form[data-operation="${operation}"]`);
+      await form.getByLabel("服务商").selectOption({label:"本地假服务"});await form.locator("summary").click();
+      await form.getByLabel("完全使用这份 JSON（忽略上方字段）").check();await form.getByLabel("params").fill(JSON.stringify(params));
+      await form.getByRole("button",{name:"执行操作"}).click();await form.locator(".operation-output").filter({hasText:result}).waitFor();
+    }
+  } finally { await page.close(); }
+});
+
+test("themes and mobile chat retain readable controls without overlap", async () => {
+  const page = await browser.newPage({viewport:{width:1440,height:1000}});
+  const screenshots = path.join(repo,"bin","workbench-browser");await fs.mkdir(screenshots,{recursive:true});
+  try {
+    await page.goto(base);await page.getByLabel("对话模型").waitFor();
+    for (const theme of ["rose","sand","sage","dusk"]) {
+      await page.evaluate(theme => localStorage.setItem("webui-theme",theme),theme);
+      for (const colorScheme of ["light","dark"]) {
+        await page.emulateMedia({colorScheme});await page.reload();await page.getByLabel("对话模型").waitFor();await page.evaluate(()=>document.fonts.ready);
+        assert.ok(await page.locator(".session-item").evaluateAll(items => items.every(item => [...item.children].every(child => child.getBoundingClientRect().right <= item.getBoundingClientRect().right + 1))), "session controls fit their panel");
+        await page.screenshot({path:path.join(screenshots,`${theme}-${colorScheme}.png`),fullPage:true});
+      }
+    }
+    await page.setViewportSize({width:390,height:844});await page.reload();await page.getByLabel("对话模型").waitFor();
+    await page.getByLabel("消息",{exact:true}).fill("长内容测试 "+"abcdefghijk".repeat(150));
+    const messages = await page.locator("#messages").boundingBox(); const composer = await page.locator(".composer").boundingBox();
+    assert.ok(composer.y >= messages.y + messages.height, "mobile composer does not obscure history");
+    assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),"mobile chat fits viewport");
+    assert.equal(await page.getByRole("link",{name:"请求日志",exact:true}).isVisible(),true,"mobile navigation has visible accessible labels");
+    await page.screenshot({path:path.join(screenshots,"mobile-chat-dark.png"),fullPage:true});
+  } finally {await page.close();}
 });
