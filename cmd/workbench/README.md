@@ -19,7 +19,7 @@ go build -o ./bin/workbench ./cmd/workbench
 | `-data-dir` | `./workbench-data` | 配置、会话与日志目录 |
 | `WORKBENCH_PASSWORD` | 空 | 可选访问密码；非回环监听时必需，用户名固定为 `workbench` |
 
-跨机器访问可设置密码并监听 `0.0.0.0:8090`；部署在不可信网络时通过 HTTPS 反向代理访问，或使用 SSH 本地端口转发。原生 HTTP 服务不自行配置 TLS。未设密码的本地模式仅接受 `localhost`/回环 IP 的 Host。
+跨机器访问可使用 SSH 本地端口转发，保持服务监听回环地址；也可设置密码并监听 `0.0.0.0:8090` 供可信网络访问。原生 HTTP 服务不自行配置 TLS，同源检查不信任转发头，不能直接置于终止 TLS 的反向代理后。未设密码的本地模式仅接受 `localhost`/回环 IP 的 Host。
 
 ## 首次设置与模型映射
 

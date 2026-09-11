@@ -34,7 +34,7 @@
 - [x] GOTOOLCHAIN=local GOPROXY=off go fmt ./...; go test ./...; go vet ./...; go build -o ./bin/ ./...; go test -race ./...。
 - [x] Node 请求测试通过；浏览器尝试启动失败，已记录依赖限制，未伪报通过。
 - [ ] 取得安装授权后补跑工作台浏览器交互与目视验收。
-- [ ] 检查差异、确认无 key/真实日志/用户数据，commit，fast-forward main，push origin main，核对远端提交。
+- [x] 已检查差异，提交实现 055563b，fast-forward main，push origin main 并核对远端提交；包含前置 OpenAI 客户端提交 e6df0cf。
 
 ## 交付说明
 
