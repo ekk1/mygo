@@ -39,7 +39,7 @@ before(async () => {
     calls.push({method:request.method,url:request.url,body,raw,headers:request.headers});
     const json=value=>{response.setHeader("Content-Type","application/json");response.end(JSON.stringify(value));};
     const url=new URL(request.url,"http://test");
-    if(request.method==="GET"&&url.pathname.endsWith("/models"))return json({data:[{id:"fake-chat-model"}],models:[{name:"models/fake-chat-model"}]});
+    if(request.method==="GET"&&url.pathname.endsWith("/models"))return json({data:[{id:"fake-chat-model"},{id:"discovered-model"}],models:[{name:"models/fake-chat-model"},{name:"models/discovered-model"}]});
     if(request.method==="POST"&&url.pathname.endsWith("/responses")){
       providerCalls++;
       const result={id:"resp-test",status:"completed",output:[{type:"message",role:"assistant",content:[{type:"output_text",text:"来自假服务的 <b>安全文本</b>"}]}]};
@@ -49,6 +49,7 @@ before(async () => {
     if(request.method==="POST"&&url.pathname.endsWith("/messages"))return json({id:"msg-test",role:"assistant",content:[{type:"text",text:"Claude answer"}]});
     if(request.method==="POST"&&url.pathname.endsWith(":generateContent"))return json({candidates:[{content:{role:"model",parts:[{text:"Gemini answer",thoughtSignature:"native-signature"}]}}]});
     if(request.method==="POST"&&url.pathname.endsWith(":streamGenerateContent")){response.setHeader("Content-Type","text/event-stream");response.end('data: '+JSON.stringify({candidates:[{content:{role:"model",parts:[{text:"Gemini answer",thoughtSignature:"native-signature"}]},finishReason:"STOP"}]})+'\n\n');return;}
+    if(request.method==="GET"&&url.pathname==="/v1/files/file_detail")return json({id:"file_detail",filename:"detail.txt",bytes:123});
     if(request.method==="GET"&&url.pathname==="/v1/files")return json(url.searchParams.has("after")?{data:[],has_more:false}:{data:files,has_more:files.length>0,last_id:files.at(-1)?.id});
     if(request.method==="POST"&&url.pathname==="/v1/files"){assert.match(request.headers["content-type"],/multipart/);assert.match(raw,/browser-upload-content/);const file={id:"file_browser",filename:"sample.txt",bytes:22,purpose:"assistants",created_at:1700000000};files.push(file);return json(file);}
     if(request.method==="GET"&&url.pathname==="/v1/files/file_browser/content"){response.setHeader("Content-Type","application/octet-stream");response.end("browser-download-content");return;}
@@ -162,5 +163,54 @@ test("live text arrives before completion and cancellation retains the partial a
  const page=await browser.newPage();try{
   await page.goto(base+"/ai/openai/beta/chat");await page.getByLabel("消息",{exact:true}).fill("stream-cancel");await page.getByRole("button",{name:"发送",exact:true}).click();await page.locator("[data-live-text]").waitFor();assert.match(await page.locator("[data-live-text]").textContent(),/来自假服务/);
   await page.getByRole("button",{name:"停止",exact:true}).click();await page.waitForFunction(()=>!document.querySelector(".composer button[type=submit]").disabled);assert.match(await page.locator("details.message.assistant").last().textContent(),/cancelled/);assert.match(await page.locator("details.message.assistant .message-text").first().textContent(),/来自假服务/);
+ }finally{await page.close();}
+});
+
+test("discovery offers searchable models and selection updates the actual request",async()=>{
+ const page=await browser.newPage();page.setDefaultTimeout(5000);
+ try{
+  await page.goto(base+"/ai/openai/alpha/chat");
+  await page.getByLabel("实际模型",{exact:true}).fill("a-custom-model");
+  await page.getByRole("button",{name:"发现模型",exact:true}).click();
+  const dialog=page.getByRole("dialog",{name:"选择模型",exact:true});await dialog.waitFor();
+  await dialog.getByLabel("搜索模型",{exact:true}).fill("discovered");
+  await dialog.getByRole("button",{name:"discovered-model",exact:true}).waitFor();
+  await page.screenshot({path:path.join(repo,"bin/workbench-browser/model-picker.png"),fullPage:true});
+  await dialog.getByRole("button",{name:"discovered-model",exact:true}).click();
+  await dialog.waitFor({state:"detached"});
+  assert.equal(await page.getByLabel("实际模型",{exact:true}).inputValue(),"discovered-model");
+  await page.getByLabel("消息",{exact:true}).fill("picker request");
+  await page.getByRole("button",{name:"预览请求",exact:true}).click();
+  await page.locator("[data-request-preview]").waitFor();
+  assert.match(await page.locator("[data-request-preview]").textContent(),/discovered-model/);
+ }finally{await page.close();}
+});
+
+test("resource details open a modal and Escape restores the row focus",async()=>{
+ files.push({id:"file_detail",filename:"detail.txt",bytes:123});
+ const page=await browser.newPage();page.setDefaultTimeout(5000);
+ try{
+  await page.goto(base+"/ai/openai/alpha/files");
+  const trigger=page.locator('[data-resource-id="file_detail"]').getByRole("button",{name:"详情",exact:true});await trigger.click();
+  const dialog=page.getByRole("dialog",{name:"资源详情",exact:true});await dialog.waitFor();
+  await dialog.locator("pre").waitFor();
+  assert.match(await dialog.textContent(),/detail.txt/);
+  await page.screenshot({path:path.join(repo,"bin/workbench-browser/resource-detail.png"),fullPage:true});
+  assert.equal(await page.evaluate(()=>document.querySelector("dialog").matches(":modal")),true);
+  await page.keyboard.press("Escape");await dialog.waitFor({state:"detached"});
+  assert.equal(await trigger.evaluate(el=>el===document.activeElement),true);
+ }finally{files=files.filter(f=>f.id!=="file_detail");await page.close();}
+});
+
+test("profile controls align and parameter rows stay compact",async()=>{
+ const page=await browser.newPage({viewport:{width:1440,height:1000}});
+ try{
+  await page.goto(base+"/ai/openai/alpha/image");await page.getByLabel("尺寸",{exact:true}).waitFor();
+  const profile=await page.getByLabel("当前 profile",{exact:true}).boundingBox(),manage=await page.getByRole("link",{name:"管理",exact:true}).boundingBox();
+  assert.ok(Math.abs(profile.y+profile.height/2-manage.y-manage.height/2)<2,"profile and management centers differ");
+  const model=await page.getByLabel("实际模型",{exact:true}).boundingBox(),discover=await page.getByRole("button",{name:"发现模型",exact:true}).boundingBox();
+  assert.ok(Math.abs(model.y+model.height-discover.y-discover.height)<2,"model and discovery bottoms differ");
+  const size=await page.getByLabel("尺寸",{exact:true}).boundingBox(),format=await page.getByLabel("输出格式",{exact:true}).boundingBox();
+  assert.ok(format.y-size.y-size.height<48,"parameter rows have excessive blank space");
  }finally{await page.close();}
 });

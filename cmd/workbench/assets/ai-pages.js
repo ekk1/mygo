@@ -68,8 +68,39 @@
   const draftKey=`wb-draft-${profile.id}-${page}`;let draft={};try{draft=JSON.parse(sessionStorage.getItem(draftKey)||"{}");}catch{}
   const controls={};const defaultModel={openai:{image:"gpt-image-1", "image-edit":"gpt-image-1",speech:"gpt-4o-mini-tts",transcribe:"gpt-4o-transcribe",translate:"whisper-1"},gemini:{image:"gemini-2.5-flash-image","image-edit":"gemini-2.5-flash-image",speech:"gemini-2.5-flash-preview-tts"},xai:{image:"grok-imagine-image","image-edit":"grok-imagine-image",video:"grok-imagine-video"}};
   const model=input("model",draft.model||defaultModel[vendor]?.[page]||profile.models?.[0]||"");model.setAttribute("list","model-catalog");model.required=!(vendor==="xai"&&["speech","transcribe"].includes(page));controls.model=model;
-  const catalog=el("datalist",{id:"model-catalog"},(profile.models||[]).map(id=>el("option",{value:id})));
-  const discover=button("发现模型",async()=>{discover.disabled=true;try{const result=await W.native("models.list");const list=result.data||result.models||[];catalog.replaceChildren(list.map(item=>el("option",{value:item.id||item.name?.replace(/^models\//,"")})));status.replaceChildren(W.notice(`读取到 ${list.length} 个模型，可在模型输入框选择或手填。`));}catch(error){W.fail(error,status);}finally{discover.disabled=false;}});
+  const catalogKey=`wb-models-${profile.id}-${profile.base_url}`;
+  let modelIDs=[...(profile.models||[])];
+  try{const saved=JSON.parse(sessionStorage.getItem(catalogKey)||"null");if(Array.isArray(saved))modelIDs=[...new Set([...modelIDs,...saved.filter(id=>typeof id==="string")])];}catch{}
+  const catalog=el("datalist",{id:"model-catalog"});
+  const updateCatalog=()=>catalog.replaceChildren(modelIDs.map(id=>el("option",{value:id})));
+  updateCatalog();
+  const discover=button("发现模型",async()=>{
+    const modal=W.dialog("选择模型"),search=input("model_search","","search");
+    search.placeholder="按模型名称搜索";search.setAttribute("autocomplete","off");
+    const list=el("div",{class:"model-options"}),info=el("div",{}),controller=new AbortController();
+    const render=()=>{
+      const shown=modelIDs.filter(id=>id.toLowerCase().includes(search.value.trim().toLowerCase()));
+      list.replaceChildren(...shown.map(id=>button(id,()=>{model.value=id;model.dispatchEvent(new Event("input",{bubbles:true}));modal.close();},"model-option secondary")));
+      if(!shown.length)list.append(W.notice(modelIDs.length?"没有匹配的模型，仍可在页面手动输入模型名。":"还没有模型，可刷新目录或在页面手动输入。"));
+    };
+    let loading=false;
+    const refresh=button("刷新模型",async()=>{
+      if(loading)return;loading=true;refresh.disabled=true;info.replaceChildren(W.notice("正在读取当前 profile 的模型目录…"));
+      try{
+        const result=await W.native("models.list",{}, {},false,controller.signal);
+        const rows=result.data||result.models;
+        if(!Array.isArray(rows))throw new Error("服务商返回的模型目录格式无法识别");
+        modelIDs=[...new Set(rows.map(item=>typeof item==="string"?item:item.id||item.name?.replace(/^models\//,"")).filter(id=>typeof id==="string"&&id.trim()))];
+        updateCatalog();try{sessionStorage.setItem(catalogKey,JSON.stringify(modelIDs));}catch{}
+        info.replaceChildren(W.notice(`读取到 ${modelIDs.length} 个模型，点击模型名称即可使用。`));render();
+      }catch(error){if(error.name!=="AbortError")info.replaceChildren(W.notice(error.message,true));}
+      finally{loading=false;refresh.disabled=false;}
+    });
+    search.addEventListener("input",render);
+    modal.dialog.addEventListener("close",()=>controller.abort(),{once:true});
+    modal.body.replaceChildren(el("div",{class:"model-search"},field("搜索模型",search),refresh),info,list);
+    render();search.focus();refresh.click();
+  });
   const prompt=el("textarea",{name:"prompt",rows:chat?4:6,placeholder:chat?"输入消息…":"描述你希望完成的工作…"},draft.prompt||"");prompt.required=!["transcribe","translate"].includes(page);controls.prompt=prompt;
   const settingsFields=descriptors(vendor,page).map(([name,label,type,value,choices])=>{let control;if(type==="select")control=select(name,choices,draft[name]??(name==="protocol"?profile.protocol:value));else if(type==="textarea")control=el("textarea",{name,rows:2},draft[name]??value);else control=input(name,draft[name]??value,type);if(type==="checkbox")control.checked=draft[name]??value;if(type==="number")control.step="any";if(name==="tier"&&type==="text"){control.setAttribute("list","service-tiers");control.placeholder="省略 / auto / default / flex / priority";}controls[name]=control;return field(label,control);});
   const extras=el("textarea",{name:"extra",rows:5,spellcheck:"false"},draft.extra||"{}");controls.extra=extras;
@@ -91,7 +122,7 @@
   function invalidate(){if(preview.childNodes.length)preview.replaceChildren(W.notice("输入或参数已变化，请重新预览。"));const values=collect();delete values.files;delete values.mask;try{sessionStorage.setItem(draftKey,JSON.stringify(values));}catch{}}
   form.addEventListener("input",invalidate);form.addEventListener("change",invalidate);
   controls.protocol?.addEventListener("change",()=>{session=null;parent="";renderMessages();refreshSessions().catch(error=>W.fail(error,status));});
-  async function perform(isPreview){if(busy||!form.reportValidity())return;busy=true;send.disabled=true;previewButton.disabled=true;for(const c of [...Object.values(controls),files,mask])c.disabled=true;controller=new AbortController();stop.disabled=false;status.replaceChildren(W.notice(isPreview?"正在构建请求预览…":"请求处理中…"));
+  async function perform(isPreview){if(busy||!form.reportValidity())return;busy=true;send.disabled=true;previewButton.disabled=true;discover.disabled=true;for(const c of [...Object.values(controls),files,mask])c.disabled=true;controller=new AbortController();stop.disabled=false;status.replaceChildren(W.notice(isPreview?"正在构建请求预览…":"请求处理中…"));
     try{const values=collect();const request=await builders[vendor](page,values);let response;
       if(chat){const payload={provider_id:profile.id,operation:request.operation,params:request.params,parent_id:parent,expected_head:session?.head_id||"",revision:W.config.revision,text:values.prompt,stream:values.stream};
         if(!isPreview&&!session){session=await W.api("/api/sessions",{method:"POST",body:JSON.stringify({profile_id:profile.id,operation:request.operation,title:values.prompt.slice(0,60)||"新会话"})});}
@@ -101,7 +132,7 @@
       }else response=await W.native(request.operation,request.params,request.uploads,isPreview,controller.signal);
       status.replaceChildren();if(isPreview)preview.replaceChildren(W.preview(response));else if(chat){session=response;parent=session.head_id;prompt.value="";invalidate();preview.replaceChildren();renderMessages();await refreshSessions();}else{result.replaceChildren(el("h2",{},page==="video"?"任务已提交":"结果"),W.result(response));if(page==="video"){const id=response.request_id||response.name||response.id;if(id)videoTask(input("video_id",id));}status.append(W.notice("请求已完成。"));}
     }catch(error){status.replaceChildren(W.notice(error.name==="AbortError"?"请求已停止。已提交的云端任务不会自动取消。":error.message,true));if(chat&&session){try{for(let attempt=0;attempt<100;attempt++){session=await W.api(`/api/sessions/${session.id}`);if(!session.messages.some(item=>item.status==="pending"))break;await new Promise(resolve=>setTimeout(resolve,100));}parent=session.head_id;renderMessages();await refreshSessions();}catch(reload){W.fail(reload,status);}}}
-    finally{busy=false;send.disabled=false;previewButton.disabled=false;for(const c of [...Object.values(controls),files,mask])c.disabled=false;stop.disabled=true;controller=null;}
+    finally{busy=false;send.disabled=false;previewButton.disabled=false;discover.disabled=false;for(const c of [...Object.values(controls),files,mask])c.disabled=false;stop.disabled=true;controller=null;}
   }
   form.addEventListener("submit",event=>{event.preventDefault();perform(false);});
   W.root.replaceChildren(W.heading(labels[page],`${W.vendors[vendor].name} / ${profile.name}`),chat?el("div",{class:"chat-layout"},sessionsPanel,form):form);

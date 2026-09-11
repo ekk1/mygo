@@ -81,6 +81,17 @@
     const pre=el("pre",{"data-request-preview":""},pretty(truncate(value)));
     return el("section",{class:"request-preview"},el("div",{class:"section-head"},el("h3",{},"发送前 · 原始请求"),button("展开完整内容",event=>{expanded=!expanded;pre.textContent=pretty(expanded?value:truncate(value));event.currentTarget.textContent=expanded?"折叠长内容":"展开完整内容";})),el("p",{class:"small muted"},"这是上游请求；长文本只在这里折叠，实际发送保持完整。"),pre,button("复制完整请求体",async()=>{try{await navigator.clipboard.writeText(pretty(value.body??value));}catch(error){W.fail(error);}}),W.download(new Blob([pretty(value.body??value)],{type:"application/json"}),"request.json"));
   };
+  let dialogID=0;
+  W.dialog = title => {
+    const previous=document.activeElement,id="wb-dialog-title-"+(++dialogID);
+    const body=el("div",{class:"dialog-body"});
+    const dialog=el("dialog",{class:"wb-dialog","aria-labelledby":id},
+      el("div",{class:"dialog-header"},el("h2",{id},title),button("关闭",()=>dialog.close(),"quiet")),body);
+    dialog.addEventListener("close",()=>{dialog.remove();if(previous?.isConnected)previous.focus();});
+    dialog.addEventListener("click",event=>{if(event.target!==dialog)return;const r=dialog.getBoundingClientRect();if(event.clientX<r.left||event.clientX>r.right||event.clientY<r.top||event.clientY>r.bottom)dialog.close();});
+    document.body.append(dialog);dialog.showModal();
+    return {dialog,body,close:()=>dialog.close()};
+  };
   W.confirm = (title, action) => {const dialog=el("dialog",{},el("h2",{},title),el("p",{},"此操作会修改当前 profile 的云端资源。"),el("div",{class:"actions"},button("返回",()=>dialog.close()),button("确认",async()=>{dialog.close();try{await action();}catch(e){W.fail(e);}},"danger")));dialog.addEventListener("close",()=>dialog.remove());document.body.append(dialog);dialog.showModal();};
   function renderNavigation(){
     const nav=document.querySelector("#navigation");nav.replaceChildren(el("a",{href:"/",class:"nav-link",...(parts.length?{}:{"aria-current":"page"})},"⌂",el("span",{},"工作台")),el("div",{class:"nav-caption"},"模块"),el("a",{href:"/ai",class:"nav-link",...(!vendor&&parts[0]==="ai"?{"aria-current":"page"}:{})},"✦",el("span",{},"AI")));

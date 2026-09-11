@@ -15,10 +15,15 @@
   const withID=row=>cid?{container_id:cid,file_id:idOf(row)}:feature==="files"?{file_id:idOf(row)}:feature==="containers"?{container_id:idOf(row)}:{batch_id:idOf(row)};
   async function call(operation,params,uploads){return W.native(operation,params,uploads);}
   async function load(){if(loading)return;loading=true;refresh.disabled=true;status.replaceChildren(W.notice("正在读取资源列表…"));try{const data=await call(group+".list",listParams());rows=data.data||data.files||data.batches||data.batch_jobs||data.containers||[];if(!Array.isArray(rows))throw new Error("服务商返回的资源列表格式无法识别，请查看请求日志");next=data.nextPageToken||data.next_page_token||data.pagination_token||data.next_pagination_token||data.pagination?.next_token||(data.has_more?(data.last_id||idOf(rows.at(-1)||{})):"");loading=false;render();status.replaceChildren();}catch(error){status.replaceChildren(W.notice(error.message,true));}finally{loading=false;refresh.disabled=false;}}
-  async function show(row){try{const data=await call(group+".get",withID(row));detail.replaceChildren(el("section",{class:"card stack"},el("div",{class:"section-head"},el("h2",{},"资源详情"),button("关闭",()=>detail.replaceChildren())),el("pre",{},pretty(data))));}catch(error){W.fail(error,status);}}
+  async function show(row){
+    const modal=W.dialog("资源详情");
+    modal.body.replaceChildren(W.notice("正在读取资源详情…"));
+    try{const data=await call(group+".get",withID(row));if(modal.dialog.isConnected)modal.body.replaceChildren(el("pre",{},pretty(data)));}
+    catch(error){if(modal.dialog.isConnected)modal.body.replaceChildren(W.notice(error.message,true));}
+  }
   async function download(operation,params,name){const data=await call(operation,params);if(!data.blob){const blob=new Blob([typeof data==="string"?data:pretty(data)],{type:"application/json"});data.blob=blob;}const link=W.download(data.blob,name||data.filename||"download.bin");detail.replaceChildren(el("section",{class:"card"},el("p",{},"下载已就绪。"),link));link.click();}
   const rowButton=(label,action,kind="quiet")=>button(label,async event=>{event.currentTarget.disabled=true;try{await action();}catch(error){W.fail(error,status);}finally{event.currentTarget.disabled=false;}},kind);
-  function rowActions(row){const actions=[rowButton("详情",()=>show(row))];
+  function rowActions(row){const actions=[button("详情",()=>show(row),"quiet")];
    if(feature==="containers"&&!cid)actions.unshift(el("a",{href:W.url("containers")+"?container="+encodeURIComponent(idOf(row)),class:"button secondary"},"打开文件"));
    if(feature==="files"||cid){if(vendor!=="gemini")actions.push(rowButton("下载",()=>download(group+".download",{...withID(row),filename:row.filename||row.path?.split("/").at(-1)||"download.bin"},row.filename||row.path?.split("/").at(-1))));actions.push(rowButton("复制引用",()=>navigator.clipboard.writeText(row.uri||idOf(row))));}
    if(feature==="batches"){

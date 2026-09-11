@@ -27,7 +27,7 @@ go build -o ./bin/workbench ./cmd/workbench
 
 1. 进入服务商的「管理 profiles」，新建 profile，填写名称、API key、base URL 和 proxy URL。
 2. 进入文字或其他功能页，在顶部切换 profile。每家可以保存多组凭据。
-3. 直接填写实际模型名，也可点击「发现模型」读取当前 profile 的目录。
+3. 直接填写实际模型名，或点击「发现模型」在弹窗中搜索并选择。目录在当前浏览器标签页按 profile 缓存，可在弹窗中刷新。
 4. 调整当前服务商的原生参数，先「预览请求」，再发送。
 
 官方 base URL 默认值：OpenAI 为 `https://api.openai.com/v1`，Anthropic 为 `https://api.anthropic.com/v1`，Gemini 为 `https://generativelanguage.googleapis.com`，xAI 为 `https://api.x.ai/v1`。Gemini 的版本路径由工作台添加。通用 AI 用于 OpenAI 兼容中转站，手填 API 前缀，并显式启用站点支持的图片、音频和资源能力。
@@ -62,7 +62,7 @@ proxy URL 留空使用环境代理，`-` 表示直连，支持 http/https/socks5
 
 ## 文件、容器与 Batch
 
-资源页按当前 profile 自动读取一页数据，以表格展示文件名、ID、大小、状态、时间和行内操作。支持刷新、前后分页和当前页搜索。
+资源页按当前 profile 自动读取一页数据，以表格展示文件名、ID、大小、状态、时间和行内操作。支持刷新、前后分页和当前页搜索；资源详情在弹窗中查看，可按 Esc 关闭。
 
 - 文件：上传、详情、复制引用、删除和支持的下载。Gemini 用户上传文件 API 不提供内容下载，页面不显示此操作；生成的视频和 Batch 结果可以下载。
 - 容器：创建、详情、删除，进入容器查看文件；支持上传、引用已有文件 ID、下载和删除。
