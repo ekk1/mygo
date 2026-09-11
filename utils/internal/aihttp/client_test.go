@@ -76,6 +76,43 @@ func TestProxyAndConcurrentDebug(t *testing.T) {
 	}
 }
 
+func TestDebugCanOmitResponseBody(t *testing.T) {
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if string(body) != "prompt" {
+			t.Errorf("request body = %q", body)
+		}
+		io.WriteString(w, "answer")
+	}))
+	defer s.Close()
+	dir := t.TempDir()
+	c, err := New(Config{BaseURL: s.URL, ProxyURL: "-", Debug: true, DebugDir: dir, DebugOmitResponseBody: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.CloseIdleConnections()
+	res, err := c.Do(context.Background(), http.MethodPost, "/test", "text/plain", strings.NewReader("prompt"), nil)
+	if err != nil || string(res.Body) != "answer" {
+		t.Fatalf("Do = %q, %v", res.Body, err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("debug entries = %d, %v", len(entries), err)
+	}
+	p := filepath.Join(dir, entries[0].Name())
+	requestBody, err := os.ReadFile(filepath.Join(p, "request.body"))
+	if err != nil || string(requestBody) != "prompt" {
+		t.Fatalf("request.body = %q, %v", requestBody, err)
+	}
+	if _, err := os.Stat(filepath.Join(p, "response.body")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("response.body exists or stat failed: %v", err)
+	}
+	meta, err := os.ReadFile(filepath.Join(p, "response.json"))
+	if err != nil || !strings.Contains(string(meta), `"response_bytes": 6`) || !strings.Contains(string(meta), `"response_complete": true`) {
+		t.Fatalf("response metadata = %s, %v", meta, err)
+	}
+}
+
 func TestErrorCancelRedirectAndLoggingFailure(t *testing.T) {
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {

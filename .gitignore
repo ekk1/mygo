@@ -10,3 +10,6 @@ Thumbs.db
 
 # OpenAI 请求正文与响应调试日志
 /ai-debug/
+
+# 个人工作台配置、会话与请求日志
+/workbench-data/

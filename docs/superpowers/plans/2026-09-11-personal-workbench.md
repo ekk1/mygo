@@ -1,0 +1,41 @@
+# Personal Workbench Implementation Plan
+
+> **For agentic workers:** use superpowers:subagent-driven-development. User explicitly requests implementation and push without intermediate approval.
+
+**Goal:** 提供完整可运行的个人 OpenAI 工作台基础。
+**Architecture:** cmd/workbench 内按存储、配置、聊天、资源与页面分文件；仅复用 utils，不引入跨厂商客户端抽象。
+**Tech Stack:** Go 1.24、标准库、原生浏览器 JS、已有 httpserver/webui/kv/openai。
+**Spec:** ../specs/2026-09-11-personal-workbench-design.md
+
+## Global Constraints
+- 不安装工具或依赖；复用已存在 Go/Node/Chromium，测试禁止下载。
+- 工作在 /tmp/mygo-workbench，完成后合入 main 并推送 origin/main。
+- Go 测试与浏览器仅使用本地假服务；日志必须写入成功才能执行请求。
+
+## 任务 1：存储、配置、聊天与服务（主代理）
+- [x] 在 store_test.go 编写分库、重启、映射校验、回滚测试，先运行失败。
+- [x] 实现 store.go/config.go：Config、Provider、Model、Route；Session、Message；事务保存独立 KV。
+- [x] app.go/main.go 注册 httpserver、webui 和 JSON API，监听与退出、目录锁、同源校验。
+- [x] chat_test.go 通过 httptest 验证分支仅传祖先、映射不可绕过、工具切换、失败保存和并发冲突，再实现 chat.go。
+
+## 任务 2：原生客户端扩展及资源接口（子代理）
+- [x] tests 验证 request-only debug 不创建 response.body，保留 request；实现 openai.Config.DebugOmitResponseBody，维护文档。
+- [x] 添加 ListModels，保留官方 raw model metadata，通过已有 transport 走代理/debug。
+- [x] resources.go/resource_ops.go 实现统一操作入口（仅工作台 HTTP 路由，内部调用明确的 OpenAI 方法），覆盖已有公开操作清单；增加资源与 multipart 请求测试。
+
+## 任务 3：浏览器工作台（子代理）
+- [x] pages.go 使用 webui.Render 生成导航与页面骨架，embed 应用 CSS/JS。
+- [x] 配置页 provider/key/catalog、逻辑模型和多线路；工作台会话/模型/工具/参数/折叠/分支/流式。
+- [x] 资源页 Files、Containers、Batch 与原生操作表单；日志页 metadata/body 查看和响应记录开关。
+- [ ] 浏览器脚本已编写并尝试执行；JS 检查通过。Chromium 缺少 libcups/Cairo/Pango，启动钩子失败，桌面/手机截图目视验收待补。
+
+## 任务 4：集成审查与发布
+- [x] 独立代码审查并修复实际缺陷；补充 cmd/workbench/README.md、根 README 和 .gitignore。
+- [x] GOTOOLCHAIN=local GOPROXY=off go fmt ./...; go test ./...; go vet ./...; go build -o ./bin/ ./...; go test -race ./...。
+- [x] Node 请求测试通过；浏览器尝试启动失败，已记录依赖限制，未伪报通过。
+- [ ] 取得安装授权后补跑工作台浏览器交互与目视验收。
+- [ ] 检查差异、确认无 key/真实日志/用户数据，commit，fast-forward main，push origin main，核对远端提交。
+
+## 交付说明
+
+实现覆盖逻辑模型多线路映射、原生对话工具、分支/折叠、38 项资源操作、强制请求日志、可选响应正文与独立 KV。审查修复了退出等待、原生上下文跨模型/取消恢复、删除竞态、JSON 编码状态、原生扩展字段丢失、界面草稿丢失等缺陷。Go 和 JS 请求验证通过；浏览器验证受缺少系统依赖且尚无安装授权阻塞。按用户要求提交推送代码供另一台机器构建，同时保留此未验收项。

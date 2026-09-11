@@ -24,15 +24,17 @@ type Config struct {
 	CAFile, CertFile, KeyFile string
 	Debug                     bool
 	DebugDir                  string
+	DebugOmitResponseBody     bool
 }
 
 // Client owns a connection pool and immutable request defaults.
 type Client struct {
-	http     *http.Client
-	base     *url.URL
-	headers  http.Header
-	max      int64
-	debugDir string
+	http                  *http.Client
+	base                  *url.URL
+	headers               http.Header
+	max                   int64
+	debugDir              string
+	debugOmitResponseBody bool
 }
 
 // New builds a transport without making network requests.
@@ -69,7 +71,7 @@ func New(cfg Config) (*Client, error) {
 	for k, v := range cfg.Headers {
 		headers[http.CanonicalHeaderKey(k)] = append([]string(nil), v...)
 	}
-	return &Client{http: hc.Client, base: base, headers: headers, max: cfg.MaxResponseBytes, debugDir: dir}, nil
+	return &Client{http: hc.Client, base: base, headers: headers, max: cfg.MaxResponseBytes, debugDir: dir, debugOmitResponseBody: cfg.DebugOmitResponseBody}, nil
 }
 
 // CloseIdleConnections releases idle connections, without interrupting requests.
@@ -94,7 +96,7 @@ func (c *Client) Do(ctx context.Context, method, path, contentType string, body 
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)
 	}
-	rec, e := startRecord(c.debugDir, req)
+	rec, e := startRecord(c.debugDir, req, c.debugOmitResponseBody)
 	if e != nil {
 		if req.Body != nil {
 			req.Body.Close()

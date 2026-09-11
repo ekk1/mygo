@@ -14,6 +14,7 @@ Go 1.24 或更高版本。整个仓库使用单个 Go module：`github.com/ekk1/
 .
 ├── cmd/
 │   ├── hello/            # 最小命令示例
+│   ├── workbench/        # 个人 AI 工作台：模型、对话、资源与日志
 │   └── webui-demo/       # 页面、表单和配色示例
 ├── utils/
 │   ├── <模块>/           # 实现、测试和模块 README
@@ -51,3 +52,12 @@ go test -race ./...
 ```
 
 webui 的原生 JS 和浏览器测试需要单独执行，完整流程见 [webui 开发与测试流程](utils/webui/README.md#开发与测试流程)。
+
+## 个人工作台
+
+```sh
+go build -o ./bin/workbench ./cmd/workbench
+./bin/workbench -addr 127.0.0.1:8090 -data-dir ./workbench-data
+```
+
+打开工作台的“设置”页面配置服务商和精选模型映射。完整用法、跨机访问、日志和存储说明见 [workbench 文档](cmd/workbench/README.md)。

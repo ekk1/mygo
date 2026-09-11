@@ -11,6 +11,7 @@ type Config struct {
     Headers http.Header
     Debug bool
     DebugDir string
+    DebugOmitResponseBody bool
     MaxResponseBytes int64
     CAFile, CertFile, KeyFile string
 }
@@ -43,10 +44,20 @@ func (c *Client) DownloadMedia(ctx context.Context, rawURL string, dst io.Writer
 | --- | --- |
 | request.json | 方法、脱敏 URL/headers、开始时间 |
 | request.body | 实际读取并发送的正文，包含 multipart/文件内容 |
-| response.body | 实际读取的原始正文、二进制或 SSE，随接收落盘 |
+| response.body | 实际读取的原始正文、二进制或 SSE，随接收落盘；`DebugOmitResponseBody=true` 时不创建 |
 | response.json | 状态、脱敏 headers、耗时、字节数、完整性及失败标记 |
 
 认证头、API key 和签名查询参数脱敏；正文按原样保留，可能包含提示词、上传文件和生成内容。中断只保存已传输部分并标明不完整；没有响应也保留记录。日志创建/写入/关闭失败返回 error，不能把这种错误当作请求未执行而直接重试。并发请求各自记录；关闭 Debug 不创建日志。`response_complete` 仅表示 HTTP 正文已读到 EOF，不表示生成成功；缺少 SSE 终止事件等协议校验错误以方法返回的 error 为准。
+
+`DebugOmitResponseBody=true` 只保留请求正文与请求/响应元数据，响应仍正常返回给调用方，`response.json` 仍记录响应字节数和完整性。
+
+## Models
+
+```go
+func (c *Client) ListModels(ctx context.Context) (*ModelList, error)
+```
+
+`ListModels` 返回 provider 的 `/models` 原生目录。`ModelList` 包含 `Object`、`Data []Model` 和 `HTTP`；`Model` 解码 `ID`、`Object`、`Created`、`OwnedBy`，并在 `Raw` 中保留完整原生 metadata，重新编码时原样输出该对象。
 
 ## 最小示例
 

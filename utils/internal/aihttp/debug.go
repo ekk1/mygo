@@ -31,7 +31,11 @@ func (s *recordSink) write(p []byte) error {
 	if s.closed {
 		return os.ErrClosed
 	}
-	n, e := s.file.Write(p)
+	n := len(p)
+	var e error
+	if s.file != nil {
+		n, e = s.file.Write(p)
+	}
 	s.bytes += int64(n)
 	if e == nil && n != len(p) {
 		e = io.ErrShortWrite
@@ -44,7 +48,9 @@ func (s *recordSink) close() (int64, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.closed {
-		s.err = errors.Join(s.err, s.file.Close())
+		if s.file != nil {
+			s.err = errors.Join(s.err, s.file.Close())
+		}
 		s.closed = true
 	}
 	return s.bytes, s.complete, s.err
@@ -119,7 +125,7 @@ type record struct {
 	started           time.Time
 }
 
-func startRecord(dir string, req *http.Request) (*record, error) {
+func startRecord(dir string, req *http.Request, omitResponseBody bool) (*record, error) {
 	if dir == "" {
 		return nil, nil
 	}
@@ -133,10 +139,13 @@ func startRecord(dir string, req *http.Request) (*record, error) {
 		return nil, e
 	}
 	r.request = &recordSink{file: f, complete: req.Body == nil || req.Body == http.NoBody}
-	f, e = os.OpenFile(filepath.Join(p, "response.body"), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
-	if e != nil {
-		r.request.close()
-		return nil, e
+	f = nil
+	if !omitResponseBody {
+		f, e = os.OpenFile(filepath.Join(p, "response.body"), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+		if e != nil {
+			r.request.close()
+			return nil, e
+		}
 	}
 	r.response = &recordSink{file: f}
 	e = writeMeta(filepath.Join(p, "request.json"), map[string]any{"method": req.Method, "url": redactURL(req.URL), "headers": redactHeaders(req.Header), "started_at": r.started})

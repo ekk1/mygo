@@ -29,6 +29,7 @@ type Config struct {
 	Headers                   http.Header
 	Debug                     bool
 	DebugDir                  string
+	DebugOmitResponseBody     bool
 	MaxResponseBytes          int64
 	CAFile, CertFile, KeyFile string
 }
@@ -66,7 +67,7 @@ func New(cfg Config) (*Client, error) {
 	if cfg.BaseURL == "" {
 		cfg.BaseURL = "https://api.openai.com/v1"
 	}
-	transport, err := aihttp.New(aihttp.Config{BaseURL: cfg.BaseURL, ProxyURL: cfg.ProxyURL, Timeout: cfg.Timeout, Headers: h, Debug: cfg.Debug, DebugDir: cfg.DebugDir, MaxResponseBytes: cfg.MaxResponseBytes, CAFile: cfg.CAFile, CertFile: cfg.CertFile, KeyFile: cfg.KeyFile})
+	transport, err := aihttp.New(aihttp.Config{BaseURL: cfg.BaseURL, ProxyURL: cfg.ProxyURL, Timeout: cfg.Timeout, Headers: h, Debug: cfg.Debug, DebugDir: cfg.DebugDir, DebugOmitResponseBody: cfg.DebugOmitResponseBody, MaxResponseBytes: cfg.MaxResponseBytes, CAFile: cfg.CAFile, CertFile: cfg.CertFile, KeyFile: cfg.KeyFile})
 	if err != nil {
 		return nil, err
 	}
