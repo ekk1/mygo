@@ -7,3 +7,6 @@
 # 操作系统文件
 .DS_Store
 Thumbs.db
+
+# OpenAI 请求正文与响应调试日志
+/ai-debug/
