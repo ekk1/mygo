@@ -10,10 +10,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"sync"
-	"time"
-
-	"github.com/ekk1/mygo/utils/openai"
 )
 
 type operationLog struct {
@@ -45,47 +41,6 @@ func writeFileJSON(path string, v any) error {
 	return os.Rename(f.Name(), path)
 }
 
-// providerClient creates a mandatory request recorder before any network dispatch.
-func (a *app) providerClient(id, operation string, saveResponse *bool) (*openai.Client, func(error) error, error) {
-	p, err := a.store.getProvider(id)
-	if err != nil {
-		return nil, nil, err
-	}
-	recordResponse := a.store.configSnapshot(false).SaveResponses
-	if saveResponse != nil {
-		recordResponse = *saveResponse
-	}
-	log := operationLog{ID: newID(), ProviderID: id, Operation: operation, StartedAt: now(), Status: "running", SaveResponse: recordResponse}
-	dir := filepath.Join(a.store.dir, "logs", log.ID)
-	if err = os.MkdirAll(dir, 0700); err != nil {
-		return nil, nil, err
-	}
-	if err = writeFileJSON(filepath.Join(dir, "context.json"), log); err != nil {
-		return nil, nil, err
-	}
-	var once sync.Once
-	var result error
-	finish := func(callErr error) error {
-		once.Do(func() {
-			log.FinishedAt = now()
-			log.Status = "complete"
-			if callErr != nil {
-				log.Status = "error"
-				log.Error = callErr.Error()
-				if p.APIKey != "" {
-					log.Error = strings.ReplaceAll(log.Error, p.APIKey, "[REDACTED]")
-				}
-			}
-			result = errors.Join(callErr, writeFileJSON(filepath.Join(dir, "context.json"), log))
-		})
-		return result
-	}
-	client, err := openai.New(openai.Config{APIKey: p.APIKey, BaseURL: p.BaseURL, ProxyURL: p.ProxyURL, Timeout: 10 * time.Minute, Debug: true, DebugDir: dir, DebugOmitResponseBody: !recordResponse})
-	if err != nil {
-		return nil, nil, finish(err)
-	}
-	return client, finish, nil
-}
 func (a *app) listLogs(w http.ResponseWriter, r *http.Request) {
 	dirs, err := os.ReadDir(filepath.Join(a.store.dir, "logs"))
 	if err != nil && !errors.Is(err, os.ErrNotExist) {

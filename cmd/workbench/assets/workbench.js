@@ -1,419 +1,144 @@
 "use strict";
-
 (() => {
-  const css = document.createElement("link");
-  css.rel = "stylesheet";
-  css.href = "/assets/workbench.css";
-  document.head.append(css);
-
-  const root = document.querySelector("#app");
-  const shell = document.querySelector(".app-shell");
-  if (!root || !shell) return;
-  const page = shell.dataset.page || "chat";
-  const state = { config: null, sessions: [], session: null, operations: [], sending: false, controller: null, chatDrafts: new Map(), collapsed: new Set() };
-
+  const css = document.createElement("link"); css.rel = "stylesheet"; css.href = "/assets/workbench.css"; document.head.append(css);
   const el = (tag, attrs, ...children) => {
     const node = document.createElement(tag);
     for (const [key, value] of Object.entries(attrs || {})) {
       if (value === undefined || value === null || value === false) continue;
-      if (key === "class") node.className = value;
-      else if (key === "text") node.textContent = value;
-      else if (key.startsWith("on") && typeof value === "function") node.addEventListener(key.slice(2), value);
-      else if (key === "checked" || key === "disabled" || key === "open" || key === "required" || key === "multiple") node[key] = Boolean(value);
+      if (key.startsWith("on") && typeof value === "function") node.addEventListener(key.slice(2), value);
+      else if (["checked", "disabled", "open", "required", "multiple"].includes(key)) node[key] = Boolean(value);
       else node.setAttribute(key, String(value));
     }
-    for (const child of children.flat(Infinity)) {
-      if (child === undefined || child === null || child === false) continue;
-      node.append(child instanceof Node ? child : document.createTextNode(String(child)));
-    }
+    for (const child of children.flat(Infinity)) if (child !== undefined && child !== null && child !== false) node.append(child instanceof Node ? child : document.createTextNode(String(child)));
     return node;
   };
-  const clear = node => node.replaceChildren();
-  const button = (label, action, kind = "") => el("button", { type: "button", class: kind, onclick: action }, label);
-  const heading = (title, copy, actions) => el("div", { class: "page-heading" },
-    el("div", {}, el("h1", {}, title), el("p", {}, copy)), actions ? el("div", { class: "actions" }, actions) : null);
-  const field = (label, control, help) => el("label", { class: "field" }, el("span", {}, label), control, help ? el("small", { class: "muted" }, help) : null);
-  const checkbox = (label, checked = false, attrs = {}) => el("label", { class: "check" }, el("input", { type: "checkbox", checked, ...attrs }), el("span", {}, label));
-  const notice = (message, isError = false) => el("div", { class: "notice" + (isError ? " error" : ""), role: isError ? "alert" : "status" }, message);
-  const identifier = prefix => {
-    if (typeof crypto.randomUUID === "function") return prefix + "-" + crypto.randomUUID();
-    const bytes = new Uint8Array(16); crypto.getRandomValues(bytes);
-    return prefix + "-" + [...bytes].map(value => value.toString(16).padStart(2, "0")).join("");
-  };
+  const button = (name, action, kind = "secondary") => el("button", {type:"button",class:kind,onclick:action}, name);
+  const field = (label, control, hint) => { if(!control.hasAttribute("aria-label"))control.setAttribute("aria-label",label);return el("label", {class:"field"}, el("span",{},label),control,hint ? el("small",{class:"muted"},hint) : null); };
+  const input = (name, value = "", type = "text") => el("input", {name, value, type});
+  const select = (name, values, current = "") => el("select",{name},values.map(item=>{const [value,label]=Array.isArray(item)?item:[item,item];return el("option",{value,selected:value===current?"":null},label);}));
   const pretty = value => JSON.stringify(value, null, 2);
-  const time = value => value ? new Intl.DateTimeFormat("zh-CN", { dateStyle: "short", timeStyle: "medium" }).format(new Date(value)) : "—";
-  const errorText = async response => {
-    try { const body = await response.json(); return body.error || response.statusText; }
-    catch { return response.statusText || `请求失败（${response.status}）`; }
+  const vendors = {
+    openai:{name:"OpenAI",initial:"O",description:"Responses、Chat、图片与语音",base:"https://api.openai.com/v1"},
+    anthropic:{name:"Anthropic",initial:"A",description:"Claude 对话、文件与 Message Batches",base:"https://api.anthropic.com/v1"},
+    gemini:{name:"Google Gemini",initial:"G",description:"文字、图片、音频与视频",base:"https://generativelanguage.googleapis.com"},
+    xai:{name:"xAI",initial:"X",description:"Grok 对话、图片、语音与视频",base:"https://api.x.ai/v1"},
+    compatible:{name:"通用 AI",initial:"↗",description:"OpenAI 兼容接口 · 中转站",base:""},
   };
-  async function api(path, options = {}) {
-    const response = await fetch(path, { credentials: "same-origin", cache: "no-store", ...options,
-      headers: options.body instanceof FormData ? options.headers : { "Content-Type": "application/json", ...(options.headers || {}) } });
-    if (!response.ok) throw new Error(await errorText(response));
-    if (response.status === 204) return null;
+  const parts = location.pathname.split("/").filter(Boolean);
+  const vendor = parts[0]==="ai" ? parts[1] : null;
+  const profileID = parts[2] && parts[2]!=="profiles" ? parts[2] : null;
+  const feature = parts[2]==="profiles" ? "profiles" : parts[3] || "chat";
+  const W = window.WB = {el,button,field,input,select,pretty,vendors,vendor,profileID,feature,root:document.querySelector("#app"),config:null,profile:null};
+  W.url = (page, id = W.profile?.id) => `/ai/${vendor}/${encodeURIComponent(id)}/${page}`;
+  W.heading = (name, subtitle, actions) => el("div",{class:"page-heading"},el("div",{},el("p",{class:"eyebrow"},vendor ? vendors[vendor]?.name : "PERSONAL WORKBENCH"),el("h1",{},name),el("p",{class:"muted"},subtitle)),actions);
+  W.notice = (text,error=false)=>el("div",{class:`notice ${error?"error":""}`,role:error?"alert":"status"},text);
+  W.fail = (error,target=W.root)=>{target.querySelector("[data-error]")?.remove();target.prepend(el("div",{"data-error":""},W.notice(error.message||String(error),true)));};
+  W.api = async (path,options={}) => {
+    const response=await fetch(path,{cache:"no-store",...options,headers:{"X-Workbench-Request":"1",...(options.body instanceof FormData ? {} : {"Content-Type":"application/json"}),...options.headers}});
+    if (!response.ok) {let text;try{text=(await response.json()).error;}catch{}throw new Error(text||`请求失败 (${response.status})`);}
+    if (response.headers.get("Content-Type")?.includes("application/x-ndjson")) {
+      const reader=response.body.getReader(),decoder=new TextDecoder();let buffer="",completed;
+      const line=raw=>{if(!raw.trim())return;const event=JSON.parse(raw);if(event.type==="error")throw new Error(event.error);if(event.type==="done")completed=event.session;else options.onEvent?.(event);};
+      try {for(;;){const {value,done}=await reader.read();buffer+=decoder.decode(value||new Uint8Array(),{stream:!done});let i;while((i=buffer.indexOf("\n"))>=0){line(buffer.slice(0,i));buffer=buffer.slice(i+1);}if(done)break;}if(buffer.trim())line(buffer);if(!completed)throw new Error("连接已结束，但未收到完成状态");return completed;}finally{await reader.cancel().catch(()=>{});reader.releaseLock();}
+    }
+    if (options.binary && !response.headers.get("Content-Type")?.includes("json")) return {blob:await response.blob(),filename:decodeURIComponent(response.headers.get("Content-Disposition")?.match(/filename\*=UTF-8''([^;]+)/i)?.[1]||response.headers.get("Content-Disposition")?.match(/filename="?([^";]+)/)?.[1]||"download.bin")};
     return response.json();
-  }
-  async function loadConfig() { state.config = await api("/api/config"); return state.config; }
-  function fail(error, target = root) {
-    const current = target.querySelector("[data-error]");
-    if (current) current.remove();
-    target.prepend(el("div", { "data-error": "" }, notice(error.message || String(error), true)));
-  }
-
-  const labels = {
-    id: "资源 ID", model: "模型", input: "输入", prompt: "提示词", purpose: "用途", filename: "文件名",
-    container_id: "容器 ID", file_id: "文件 ID", batch_id: "批处理 ID", response_id: "响应 ID",
-    endpoint: "端点", completion_window: "完成时限", size: "尺寸", quality: "质量", format: "格式",
-    voice: "声音", instructions: "指令", metadata: "元数据", expires_after: "过期设置",
   };
-  const friendlyLabel = key => labels[key] || key.replaceAll("_", " ");
-  const operationVerbs = { upload: "上传", list: "列出", get: "查看", delete: "删除", download: "下载", create: "创建", add: "添加", cancel: "取消", stream: "流式执行", count: "计数", compact: "压缩", generate: "生成", edit: "编辑", speech: "语音合成", speech_stream: "流式语音", transcribe: "转写", transcribe_stream: "流式转写", translate: "翻译" };
-  function operationTitle(operation) {
-    const tail = operation.id.split(".").at(-1);
-    const nouns = { files: "文件", containers: "容器", batches: "批处理", responses: "响应", chat: "Chat", images: "图片", audio: "音频" };
-    return `${operationVerbs[tail] || operation.label || tail}${nouns[operation.group] || ""}`;
-  }
-
-  async function initSettings() {
-    await loadConfig();
-    renderSettings();
-  }
-  function configDraft() {
-    const providers = [...root.querySelectorAll("[data-provider]")].map(card => ({
-      id: card.dataset.provider,
-      name: card.querySelector("[name=name]").value.trim(),
-      base_url: card.querySelector("[name=base_url]").value.trim(),
-      proxy_url: card.querySelector("[name=proxy_url]").value.trim(),
-      api_key: card.querySelector("[name=api_key]").value,
-      clear_key: card.querySelector("[name=clear_key]").checked,
-      has_key: card.dataset.hasKey === "true",
-      models: (card.dataset.models || "").split("\n").filter(Boolean),
-    }));
-    const models = [...root.querySelectorAll("[data-model]")].map(card => ({
-      id: card.querySelector("[name=model_id]").value.trim(),
-      name: card.querySelector("[name=model_name]").value.trim(),
-      featured: card.querySelector("[name=featured]").checked,
-      routes: [...card.querySelectorAll("[data-route-row]")].map(row => ({
-        provider_id: row.querySelector("[name=provider_id]").value,
-        model: row.querySelector("[name=route_model]").value.trim(),
-        protocol: row.querySelector("[name=protocol]").value,
-      })),
-    }));
-    return { revision: state.config.revision, providers, models,
-      save_responses: root.querySelector("[name=save_responses]").checked };
-  }
-  function providerCard(provider) {
-    const card = el("section", { class: "card provider-card", "data-provider": provider.id, "data-has-key": String(Boolean(provider.has_key)), "data-models": (provider.models || []).join("\n") });
-    const name = el("input", { name: "name", value: provider.name || "", "aria-label": "服务商名称", required: true });
-    const baseURL = el("input", { name: "base_url", value: provider.base_url || "", placeholder: "https://api.openai.com/v1", required: true });
-    const proxy = el("input", { name: "proxy_url", value: provider.proxy_url || "", placeholder: "留空继承环境代理；填写 - 强制直连" });
-    const key = el("input", { name: "api_key", type: "password", autocomplete: "new-password", placeholder: provider.has_key ? "已保存；留空保持不变" : "输入 API key" });
-    const clearKey = checkbox("删除已保存的密钥", false);
-    clearKey.querySelector("input").name = "clear_key";
-    const catalog = el("pre", { class: "catalog" }, (provider.models || []).join("\n") || "尚未发现模型");
-    const discover = button("发现全部模型", async () => {
-      const status = card.querySelector("[data-card-status]");
-      discover.disabled = true; status.textContent = "正在读取模型目录…";
-      try {
-        state.config = await api("/api/config", { method: "PUT", body: JSON.stringify(configDraft()) });
-        await api(`/api/providers/${encodeURIComponent(provider.id)}/discover`, { method: "POST", body: "{}" });
-        await loadConfig(); renderSettings();
-      } catch (error) { status.textContent = ""; fail(error, card); }
-      finally { discover.disabled = false; }
-    }, "secondary");
-    discover.textContent = "保存并发现模型";
-    card.append(
-      el("div", { class: "section-head" }, el("div", {}, el("h3", {}, provider.name || "新服务商"), el("span", { class: "badge " + (provider.has_key ? "good" : "") }, provider.has_key ? "密钥已保存" : "未设置密钥")),
-        button("移除", () => card.remove(), "danger")),
-      el("div", { class: "grid-2" }, field("服务商名称", name), field("API 前缀", baseURL), field("HTTP 代理", proxy), field("API key", key, "页面不会读取已经保存的明文密钥。")),
-      el("div", { class: "actions" }, clearKey, discover, el("span", { class: "muted small", "data-card-status": "", role: "status" })),
-      el("div", { class: "field" }, el("span", {}, `模型目录 · ${(provider.models || []).length} 个`), catalog),
-    );
-    return card;
-  }
-  function routeRow(route = {}) {
-    const row = el("div", { class: "route-row", "data-route-row": "" });
-    const provider = el("select", { name: "provider_id" }, el("option", { value: "" }, "选择服务商"));
-    for (const p of state.config.providers) provider.append(el("option", { value: p.id }, p.name || p.id));
-    provider.value = route.provider_id || "";
-    const model = el("input", { name: "route_model", value: route.model || "", list: "provider-models", placeholder: "实际模型名" });
-    const protocol = el("select", { name: "protocol" }, el("option", { value: "responses" }, "Responses"), el("option", { value: "chat" }, "Chat Completions"));
-    protocol.value = route.protocol || "responses";
-    row.append(field("服务商", provider), field("实际模型", model), field("协议", protocol),
-      el("div", { class: "actions" }, button("上移", () => { const prev = row.previousElementSibling; if (prev?.matches("[data-route-row]")) prev.before(row); }, "quiet"), button("下移", () => { const next = row.nextElementSibling; if (next?.matches("[data-route-row]")) next.after(row); }, "quiet"), button("删除", () => row.remove(), "danger")));
-    return row;
-  }
-  function modelCard(model) {
-    const card = el("section", { class: "card model-card", "data-model": model.id });
-    const routes = el("div", { "data-routes": "" }, ...(model.routes || []).map(routeRow));
-    card.append(
-      el("div", { class: "section-head" }, el("h3", {}, model.name || "新逻辑模型"), button("移除", () => card.remove(), "danger")),
-      el("div", { class: "grid-2" }, field("显示名称", el("input", { name: "model_name", value: model.name || "", required: true })),
-        field("模型 ID", el("input", { name: "model_id", value: model.id, required: true, pattern: "[A-Za-z0-9_-]{1,100}" }), "保存后作为稳定调用别名。")),
-      checkbox("在对话页精选展示", Boolean(model.featured), { name: "featured" }),
-      el("div", { class: "section-head" }, el("div", {}, el("strong", {}, "有序线路"), el("p", { class: "muted small" }, "第一条线路为默认线路；工作台不会自动切换。")), button("添加线路", () => routes.append(routeRow()), "secondary")), routes,
-    );
-    return card;
-  }
-  function renderSettings() {
-    clear(root);
-    const providers = el("div", { class: "stack", id: "providers" }, ...state.config.providers.map(providerCard));
-    const models = el("div", { class: "stack", id: "models" }, ...state.config.models.map(modelCard));
-    const datalist = el("datalist", { id: "provider-models" });
-    for (const p of state.config.providers) for (const model of p.models || []) datalist.append(el("option", { value: model }, `${p.name}: ${model}`));
-    const save = button("保存全部设置", async () => {
-      save.disabled = true;
-      try {
-        state.config = await api("/api/config", { method: "PUT", body: JSON.stringify(configDraft()) });
-        renderSettings(); root.prepend(notice("设置已保存。"));
-      } catch (error) { fail(error); }
-      finally { save.disabled = false; }
-    });
-    root.append(heading("设置", "管理服务商、密钥和对话使用的逻辑模型。密钥字段始终只写不读。", save), datalist,
-      el("section", { class: "card" }, el("div", { class: "section-head" }, el("div", {}, el("h2", {}, "服务商"), el("p", { class: "muted" }, "模型发现会保存完整目录，也可在线路中手工填写模型。")), button("添加服务商", () => providers.append(providerCard({ id: identifier("provider"), models: [] })), "secondary")), providers),
-      el("section", { class: "card" }, el("div", { class: "section-head" }, el("div", {}, el("h2", {}, "逻辑模型"), el("p", { class: "muted" }, "别名与线路分离，便于固定常用入口。")), button("添加逻辑模型", () => models.append(modelCard({ id: identifier("model"), routes: [], featured: true })), "secondary")), models),
-      el("section", { class: "card" }, el("h2", {}, "日志正文"), checkbox("默认保存 provider 响应正文", Boolean(state.config.save_responses), { name: "save_responses" }), el("p", { class: "muted small" }, "请求正文和响应元数据始终记录；敏感认证头会脱敏。")),
-    );
-  }
-
-  async function initChat() {
-    [state.config, state.sessions] = await Promise.all([api("/api/config"), api("/api/sessions")]);
-    if (state.sessions[0]) state.session = await api(`/api/sessions/${state.sessions[0].id}`);
-    renderChat();
-  }
-  function featuredModels() { return state.config.models.filter(model => model.featured && model.routes?.length); }
-  async function chooseSession(id) { if (state.sending) return; state.session = await api(`/api/sessions/${id}`); renderChat(); }
-  async function refreshSessions(selectID) {
-    state.sessions = await api("/api/sessions");
-    if (selectID) state.session = await api(`/api/sessions/${selectID}`);
-    renderChat();
-  }
-  function renderMessage(message, currentHead) {
-    const details = el("details", { class: `message ${message.role}`, open: !state.collapsed.has(message.id) });
-    details.addEventListener("toggle", () => details.open ? state.collapsed.delete(message.id) : state.collapsed.add(message.id));
-    const status = message.status === "complete" ? "完成" : ({ pending: "生成中", error: "失败", cancelled: "已取消" }[message.status] || message.status);
-    const generated = generatedImages(message.output);
-    details.append(el("summary", {}, el("strong", {}, message.role === "user" ? "你" : "助手"), el("span", { class: "badge" }, status), el("span", {}, time(message.created_at))),
-      el("div", { class: "message-text" }, message.text || ""), generated.length ? el("div", { class: "generated-assets" }, ...generated.map((src, index) => el("img", { src, alt: `生成图片 ${index + 1}`, loading: "lazy" }))) : document.createDocumentFragment(),
-      el("div", { class: "message-meta" },
-        message.model_id ? el("span", {}, state.config.models.find(model => model.id === message.model_id)?.name || "已删除的逻辑模型") : null,
-        message.provider_id ? el("details", {}, el("summary", {}, "线路详情"), el("span", {}, `${message.provider_id} · ${message.actual_model || ""} · ${message.protocol || ""}`)) : null,
-        message.error ? el("span", { class: "notice error" }, message.error) : null,
-        el("button", { type: "button", class: message.id === currentHead ? "secondary" : "quiet", disabled: state.sending, onclick: () => { if (!state.sending) { state.session.head_id = message.id; renderChat(); } } }, "从这里继续"),
-        el("button", { type: "button", class: "quiet", disabled: state.sending, onclick: async () => {
-          try { const fork = await api(`/api/sessions/${state.session.id}/fork`, { method: "POST", body: JSON.stringify({ node_id: message.id, title: state.session.title + " · 分支" }) }); await refreshSessions(fork.id); }
-          catch (error) { fail(error); }
-        } }, "复制为新会话"),
-        message.output !== undefined ? el("details", {}, el("summary", {}, "原生输出"), el("pre", { class: "operation-output" }, pretty(message.output))) : null));
-    return details;
-  }
-  function generatedImages(value) {
-    const images = [];
-    const visit = item => {
-      if (!item || images.length >= 12) return;
-      if (Array.isArray(item)) { item.forEach(visit); return; }
-      if (typeof item !== "object") return;
-      if (item.type === "image_generation_call" && typeof item.result === "string" && /^[A-Za-z0-9+/]+={0,2}$/.test(item.result)) images.push("data:image/png;base64," + item.result);
-      Object.values(item).forEach(visit);
-    };
-    visit(value);
-    return images;
-  }
-  function renderChat() {
-    clear(root);
-    const modelOptions = featuredModels();
-    const draftKey = state.session?.id || "__new__";
-    const draft = state.chatDrafts.get(draftKey) || {};
-    const modelSelect = el("select", { "aria-label": "对话模型", name: "model_id" }, ...modelOptions.map(model => el("option", { value: model.id, "data-protocol": model.routes[0].protocol }, model.name)));
-    if (draft.model && modelOptions.some(model => model.id === draft.model)) modelSelect.value = draft.model;
-    const web = checkbox("联网搜索", false); const image = checkbox("图片生成", false); const exec = checkbox("代码执行", false);
-    web.querySelector("input").checked = Boolean(draft.web); image.querySelector("input").checked = Boolean(draft.image); exec.querySelector("input").checked = Boolean(draft.exec);
-    const webType = el("input", { value: draft.webType || "web_search", placeholder: "web_search" });
-    const imageType = el("input", { value: draft.imageType || "image_generation", placeholder: "image_generation" });
-    const imageModel = el("input", { value: draft.imageModel || "", placeholder: "可选图片模型" });
-    const containerID = el("input", { value: draft.containerID || "", placeholder: "留空自动创建" });
-    const files = el("input", { value: draft.files || "", placeholder: "file_1, file_2" });
-    const system = el("textarea", { rows: "2", placeholder: "可选系统指令" }, draft.system || "");
-    const options = el("textarea", { rows: "5", spellcheck: "false" }, draft.options || "{}");
-    const saveResponse = checkbox("本次保存响应正文", draft.saveResponse ?? Boolean(state.config.save_responses));
-    const prompt = el("textarea", { "aria-label": "消息", rows: "3", placeholder: modelOptions.length ? "输入消息，Ctrl / ⌘ + Enter 发送" : "先在设置中配置精选模型", disabled: !modelOptions.length }, draft.text || "");
-    const send = button("发送", () => sendMessage());
-    const stop = button("停止", () => state.controller?.abort(), "danger"); stop.hidden = true;
-    const updateTools = () => {
-      const selected = modelOptions.find(m => m.id === modelSelect.value);
-      const disabled = selected?.routes?.[0]?.protocol === "chat";
-      for (const input of [web.querySelector("input"), image.querySelector("input"), exec.querySelector("input")]) { input.disabled = disabled; if (disabled) input.checked = false; }
-    };
-    modelSelect.addEventListener("change", updateTools); updateTools();
-    prompt.addEventListener("keydown", event => { if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) { event.preventDefault(); sendMessage(); } });
-    const sessionList = el("div", { class: "session-list" }, ...state.sessions.map(session => el("div", { class: "session-item " + (state.session?.id === session.id ? "active" : "") },
-      el("button", { type: "button", class: "quiet", disabled: state.sending, onclick: () => chooseSession(session.id) }, session.title || "未命名会话"),
-      button("…", async () => {
-        const title = window.prompt("新的会话名称", session.title);
-        if (title === null || !title.trim()) return;
-        try { await api(`/api/sessions/${session.id}`, { method: "PATCH", body: JSON.stringify({ title: title.trim() }) }); await refreshSessions(state.session?.id); } catch (error) { fail(error); }
-      }, "quiet"),
-      button("×", async () => {
-        if (!window.confirm(`删除“${session.title}”？`)) return;
-        try { await api(`/api/sessions/${session.id}`, { method: "DELETE", body: "{}" }); state.session = null; await refreshSessions(); } catch (error) { fail(error); }
-      }, "danger"))));
-    const messages = el("div", { class: "messages", id: "messages" }, ...(state.session?.messages || []).map(message => renderMessage(message, state.session.head_id)));
-    if (!state.session) messages.append(el("div", { class: "empty" }, el("h2", {}, "从一个新会话开始"), el("p", {}, "建立会话后即可沿任意消息节点继续或分支。")));
-    const composer = el("section", { class: "card composer" },
-      el("div", { class: "grid-2" }, field("对话模型", modelSelect), field("文件 ID", files, "多个 ID 用逗号分隔。")),
-      field("消息", prompt),
-      el("div", { class: "tool-grid" }, web, image, exec),
-      el("details", { class: "advanced" }, el("summary", {}, "工具版本与原生参数"), el("div", { class: "grid-2" }, field("Web tool type", webType), field("Image tool type", imageType), field("Image model", imageModel), field("容器 ID", containerID)), field("系统指令", system), field("原生 JSON options", options, "对象内容将合并进核心请求。")),
-      el("div", { class: "actions" }, saveResponse, send, stop, el("span", { class: "muted small", role: "status", "data-send-status": "" })));
-    const captureDraft = () => state.chatDrafts.set(state.session?.id || draftKey, { model: modelSelect.value, text: prompt.value, files: files.value, system: system.value, options: options.value,
-      web: web.querySelector("input").checked, image: image.querySelector("input").checked, exec: exec.querySelector("input").checked, webType: webType.value, imageType: imageType.value,
-      imageModel: imageModel.value, containerID: containerID.value, saveResponse: saveResponse.querySelector("input").checked });
-    for (const control of composer.querySelectorAll("input,select,textarea")) { control.addEventListener("input", captureDraft); control.addEventListener("change", captureDraft); }
-    async function sendMessage() {
-      if (state.sending || !prompt.value.trim()) return;
-      state.sending = true; captureDraft();
-      try {
-        if (!state.session) {
-          state.session = await api("/api/sessions", { method: "POST", body: JSON.stringify({ title: prompt.value.trim().slice(0, 36) }) });
-          state.chatDrafts.set(state.session.id, state.chatDrafts.get("__new__")); state.chatDrafts.delete("__new__");
-        }
-        let nativeOptions;
-        try { nativeOptions = JSON.parse(options.value || "{}"); } catch { throw new Error("原生 JSON options 不是有效对象。"); }
-        if (!nativeOptions || Array.isArray(nativeOptions) || typeof nativeOptions !== "object") throw new Error("原生 JSON options 必须是对象。");
-        const body = { parent_id: state.session.head_id || "", model_id: modelSelect.value, text: prompt.value, system: system.value,
-          files: files.value.split(",").map(v => v.trim()).filter(Boolean),
-          tools: { web: web.querySelector("input").checked, image: image.querySelector("input").checked, exec: exec.querySelector("input").checked,
-            web_type: webType.value, image_type: imageType.value, image_model: imageModel.value, container_id: containerID.value },
-          options: nativeOptions, save_response: saveResponse.querySelector("input").checked };
-        state.controller = new AbortController(); send.disabled = true; stop.hidden = false;
-        for (const action of root.querySelectorAll(".session-item button,.message-meta button,[data-new-session]")) action.disabled = true;
-        const statusNode = composer.querySelector("[data-send-status]"); statusNode.textContent = "正在生成…";
-        const response = await fetch(`/api/sessions/${state.session.id}/messages`, { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: state.controller.signal });
-        if (!response.ok) throw new Error(await errorText(response));
-        const streamMessage = el("div", { class: "message assistant" }, el("div", { class: "message-text", "data-stream": "" })); messages.append(streamMessage);
-        const textNode = streamMessage.querySelector("[data-stream]");
-        const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = "";
-        while (true) {
-          const { value, done } = await reader.read(); buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
-          const lines = buffer.split("\n"); buffer = done ? "" : lines.pop();
-          for (const line of lines) if (line.trim()) {
-            const event = JSON.parse(line);
-            if (event.type === "delta") textNode.textContent += event.text || "";
-            if (event.type === "start" && event.session) state.session = event.session;
-            if (event.type === "done" && event.session) state.session = event.session;
-            if (event.type === "error") throw new Error(event.error || "生成失败");
-          }
-          if (done) break;
-        }
-        prompt.value = ""; captureDraft(); state.sending = false; await refreshSessions(state.session.id);
-      } catch (error) {
-        let shown = error;
-        state.sending = false;
-        if (state.session?.id) { try { state.session = await api(`/api/sessions/${state.session.id}`); state.sessions = await api("/api/sessions"); renderChat(); } catch (reloadError) { shown = reloadError; } }
-        if (error.name !== "AbortError" || shown !== error) fail(shown, root.querySelector(".composer") || root);
-      } finally {
-        state.sending = false; state.controller = null; send.disabled = false; stop.hidden = true;
-        for (const action of root.querySelectorAll(".session-item button,.message-meta button,[data-new-session]")) action.disabled = false;
+  W.native = (operation,params={},uploads={},preview=false,signal) => {
+    const context=W.requestContext;
+    if (!context) throw new Error("请先选择 profile");
+    let body;
+    if(Object.values(uploads).some(files=>files.length)) {body=new FormData();body.set("provider_id",context.profileID);body.set("params",JSON.stringify(params));for(const [name,files] of Object.entries(uploads))for(const file of files)body.append(name,file);}
+    else body=JSON.stringify({provider_id:context.profileID,params});
+    return W.api(`/api/native/${context.vendor}/${operation}${preview?"?preview=1&":"?"}revision=${context.revision}`,{method:"POST",body,binary:!preview,signal});
+  };
+  const objectURLs=new Set();
+  W.blobURL=blob=>{const url=URL.createObjectURL(blob);objectURLs.add(url);return url;};
+  window.addEventListener("pagehide",()=>{for(const url of objectURLs)URL.revokeObjectURL(url);});
+  W.download=(blob,name)=>el("a",{href:W.blobURL(blob),download:name,class:"button secondary"},"下载 "+name);
+  W.jsonDetails=value=>el("details",{class:"native-details"},el("summary",{},"原生结果"),el("pre",{},pretty(value)));
+  W.result=(value)=>{
+    const box=el("div",{class:"result-content"});
+    if(value?.blob){const type=value.blob.type;if(type.startsWith("audio/"))box.append(el("audio",{controls:"",src:W.blobURL(value.blob)}));else if(type.startsWith("video/"))box.append(el("video",{controls:"",src:W.blobURL(value.blob)}));box.append(W.download(value.blob,value.filename));return box;}
+    if(typeof value==="string"){box.append(el("pre",{class:"result-text"},value));return box;}
+    let assets=0;const texts=[];
+    const visit=(v,key="")=>{if(!v||typeof v!=="object")return;
+      if(typeof v.text==="string")texts.push(v.text);
+      if(typeof v.output_text==="string")texts.push(v.output_text);
+      if(v.message?.content && typeof v.message.content==="string")texts.push(v.message.content);
+      if((v.b64_json || v.type==="image_generation_call"&&v.result) && assets++<20){const uri="data:image/png;base64,"+(v.b64_json||v.result);box.append(el("img",{src:uri,alt:"生成的图片"}),el("a",{href:uri,download:"image.png"},"下载图片"));}
+      const inline=v.inlineData||v.inline_data;if(inline?.data && assets++<20){const mime=inline.mimeType||inline.mime_type||"application/octet-stream";const raw=Uint8Array.from(atob(inline.data),c=>c.charCodeAt(0));let blob=new Blob([raw],{type:mime});if(mime.startsWith("audio/L16")||mime.startsWith("audio/pcm"))blob=W.wav(raw,Number(mime.match(/rate=(\d+)/)?.[1]||24000));const url=W.blobURL(blob);if(mime.startsWith("image/"))box.append(el("img",{src:url,alt:"生成的图片"}));if(mime.startsWith("audio/"))box.append(el("audio",{src:url,controls:""}));box.append(W.download(blob,mime.startsWith("audio/")?"speech.wav":"output.png"));}
+      if(W.vendor==="gemini"&&typeof v.uri==="string") {
+        try {const media=new URL(v.uri),base=new URL(W.profile.base_url);const match=media.pathname.match(/\/files\/([^/:]+)(?::download)?$/);if(media.origin===base.origin&&match){box.append(button("下载生成的视频",async event=>{event.currentTarget.disabled=true;try{const data=await W.native("files.download",{file_id:"files/"+match[1],filename:"video.mp4"});box.append(W.result(data));}catch(error){W.fail(error,box);}finally{event.currentTarget.disabled=false;}}));}}catch{}
       }
+      if(typeof v.url==="string" && /^https?:\/\//.test(v.url))box.append(el("a",{href:v.url,target:"_blank",rel:"noopener noreferrer"},"打开媒体 / 下载"));
+      for(const [k,x]of Object.entries(v))if(!["inlineData","inline_data","HTTP","http","native_events"].includes(k)){if(Array.isArray(x))x.forEach(y=>visit(y,k));else if(x&&typeof x==="object")visit(x,k);}
+    };visit(value);if(texts.length)box.prepend(el("div",{class:"message-text"},[...new Set(texts)].join("\n")));box.append(W.jsonDetails(value));return box;
+  };
+  W.wav=(bytes,rate)=>{const header=new ArrayBuffer(44);const v=new DataView(header);const str=(offset,s)=>[...s].forEach((c,i)=>v.setUint8(offset+i,c.charCodeAt(0)));str(0,"RIFF");v.setUint32(4,36+bytes.length,true);str(8,"WAVEfmt ");v.setUint32(16,16,true);v.setUint16(20,1,true);v.setUint16(22,1,true);v.setUint32(24,rate,true);v.setUint32(28,rate*2,true);v.setUint16(32,2,true);v.setUint16(34,16,true);str(36,"data");v.setUint32(40,bytes.length,true);return new Blob([header,bytes],{type:"audio/wav"});};
+  W.preview = (value) => {
+    let expanded=false;const truncate=v=>typeof v==="string" && v.length>2000 ? v.slice(0,2000)+`… [省略 ${v.length-2000} 字符，仅预览折叠]` : Array.isArray(v)?v.map(truncate):v&&typeof v==="object"?Object.fromEntries(Object.entries(v).map(([k,x])=>[k,truncate(x)])):v;
+    const pre=el("pre",{"data-request-preview":""},pretty(truncate(value)));
+    return el("section",{class:"request-preview"},el("div",{class:"section-head"},el("h3",{},"发送前 · 原始请求"),button("展开完整内容",event=>{expanded=!expanded;pre.textContent=pretty(expanded?value:truncate(value));event.currentTarget.textContent=expanded?"折叠长内容":"展开完整内容";})),el("p",{class:"small muted"},"这是上游请求；长文本只在这里折叠，实际发送保持完整。"),pre,button("复制完整请求体",async()=>{try{await navigator.clipboard.writeText(pretty(value.body??value));}catch(error){W.fail(error);}}),W.download(new Blob([pretty(value.body??value)],{type:"application/json"}),"request.json"));
+  };
+  W.confirm = (title, action) => {const dialog=el("dialog",{},el("h2",{},title),el("p",{},"此操作会修改当前 profile 的云端资源。"),el("div",{class:"actions"},button("返回",()=>dialog.close()),button("确认",async()=>{dialog.close();try{await action();}catch(e){W.fail(e);}},"danger")));dialog.addEventListener("close",()=>dialog.remove());document.body.append(dialog);dialog.showModal();};
+  function renderNavigation(){
+    const nav=document.querySelector("#navigation");nav.replaceChildren(el("a",{href:"/",class:"nav-link",...(parts.length?{}:{"aria-current":"page"})},"⌂",el("span",{},"工作台")),el("div",{class:"nav-caption"},"模块"),el("a",{href:"/ai",class:"nav-link",...(!vendor&&parts[0]==="ai"?{"aria-current":"page"}:{})},"✦",el("span",{},"AI")));
+    if(parts[0]==="ai")for(const [kind,v]of Object.entries(vendors)){
+      nav.append(el("a",{href:`/ai/${kind}`,class:"nav-link vendor-link",...(kind===vendor?{"aria-current":"page"}:{})},el("span",{class:"vendor-mark"},v.initial),el("span",{},v.name)));
+      if(kind===vendor && W.profile)nav.append(el("div",{class:"feature-nav"},W.menu().map(([id,label])=>el("a",{href:W.url(id),class:"nav-link",...(feature===id?{"aria-current":"page"}:{})},label))));
     }
-    const newSession = button("新建会话", async () => { if (state.sending) return; try { const s = await api("/api/sessions", { method: "POST", body: JSON.stringify({ title: "新会话" }) }); await refreshSessions(s.id); } catch (error) { fail(error); } }, "secondary");
-    newSession.dataset.newSession = ""; newSession.disabled = state.sending;
-    for (const action of sessionList.querySelectorAll("button")) action.disabled = state.sending;
-    root.append(heading("对话", "每条消息都是可继续、可折叠、可复制成新会话的节点。", newSession),
-      el("div", { class: "chat-layout" }, el("aside", { class: "card session-panel" }, el("h2", {}, "会话"), sessionList), el("div", {}, messages, composer)));
+    const header=document.querySelector("#workspace-header");header.replaceChildren(button("☰ 导航",()=>{const side=document.querySelector("#sidebar");const open=side.classList.toggle("is-open");header.querySelector(".menu-toggle").setAttribute("aria-expanded",String(open));},"quiet menu-toggle"),el("div",{class:"breadcrumbs"},el("a",{href:"/"},"工作台"),parts[0]==="ai"?el("span",{},"/ AI",vendor?` / ${vendors[vendor]?.name||vendor}`:""):null));
+    if(W.profile){const profiles=W.config.providers.filter(p=>p.kind===vendor);const picker=select("profile",profiles.map(p=>[p.id,p.name]),W.profile.id);picker.setAttribute("aria-label","当前 profile");picker.addEventListener("change",()=>location.assign(W.url(feature,picker.value)));header.append(el("div",{class:"profile-switch"},field("Profile",picker),el("a",{href:`/ai/${vendor}/profiles`,class:"button quiet"},"管理")));}
   }
-
-  async function initOperations(group) {
-    [state.config, state.operations] = await Promise.all([api("/api/config"), api("/api/operations")]);
-    renderOperations(group);
+  function home(){W.root.replaceChildren(W.heading(parts[0]==="ai"?"AI":"个人工作台",parts[0]==="ai"?"选择服务商，进入自己的工作空间。":"一个入口，处理日常工作。"));if(parts[0]!=="ai"){W.root.append(el("a",{href:"/ai",class:"module-entry"},el("span",{class:"module-symbol"},"✦"),el("div",{},el("h2",{},"AI"),el("p",{},"文字、图片、音频、视频与云端资源")),el("span",{},"进入 →")));return;}
+    W.root.append(el("div",{class:"vendor-list"},Object.entries(vendors).map(([kind,v])=>el("a",{href:`/ai/${kind}`,class:"vendor-entry"},el("span",{class:"vendor-symbol"},v.initial),el("div",{},el("h2",{},v.name),el("p",{class:"muted"},v.description)),el("span",{class:"badge"},`${W.config.providers.filter(p=>p.kind===kind).length} profiles`),el("span",{},"→")))));
   }
-  function operationCard(operation) {
-    const form = el("form", { "data-operation": operation.id });
-    const provider = el("select", { name: "provider_id", required: true }, el("option", { value: "" }, "选择服务商"), ...state.config.providers.map(p => el("option", { value: p.id }, p.name || p.id)));
-    const defaults = operation.body && typeof operation.body === "object" ? structuredClone(operation.body) : {};
-    const fields = [...new Set([...Object.keys(defaults), ...(operation.fields || [])])];
-    const controls = new Map();
-    for (const name of fields) {
-      const value = defaults[name];
-      const input = typeof value === "boolean" ? el("select", { name }, el("option", { value: "true" }, "是"), el("option", { value: "false" }, "否"))
-        : (value && typeof value === "object") ? el("textarea", { name, rows: "3", spellcheck: "false" }, pretty(value))
-        : el("input", { name, value: value ?? "", placeholder: friendlyLabel(name) });
-      controls.set(name, input); form.append(field(friendlyLabel(name), input));
-    }
-    for (const name of operation.upload_fields || []) form.append(field(friendlyLabel(name), el("input", { name, type: "file", multiple: name === "image" }), "可留空以使用原生 JSON 中的文件 ID 或 URL（操作支持时）。"));
-    const advanced = el("textarea", { rows: "7", spellcheck: "false" }, pretty(defaults));
-    const fullJSON = checkbox("完全使用这份 JSON（忽略上方字段）", false);
-    const save = checkbox("保存本次响应正文", Boolean(state.config.save_responses));
-    const output = el("pre", { class: "operation-output", hidden: true });
-    const submit = el("button", { type: "submit" }, operation.binary ? "执行并下载" : "执行操作");
-    form.append(el("details", { class: "advanced" }, el("summary", {}, "完整原生 JSON"), fullJSON, field("params", advanced, "启用整包模式后，可直接编辑所有原生参数。")), el("div", { class: "actions" }, save, submit), output);
-    form.addEventListener("submit", async event => {
-      event.preventDefault(); submit.disabled = true; output.hidden = true;
+  function profileSettings(){
+    const profiles=W.config.providers.filter(p=>p.kind===vendor);
+    W.root.replaceChildren(W.heading(`${vendors[vendor].name} · Profiles`,"每个 profile 对应一组 key、base URL 与代理配置。",button("新建 profile",()=>editProfile())));
+    W.root.append(el("div",{class:"profile-list"},profiles.map(p=>el("section",{class:"card profile-row"},el("div",{},el("h2",{},p.name),el("p",{class:"muted"},p.base_url),el("span",{class:"badge"},p.has_key?"已保存 key":"未设置 key")),el("div",{class:"actions"},el("a",{href:W.url("chat",p.id),class:"button"},"进入"),button("编辑",()=>editProfile(p)),button("复制",()=>editProfile({...p,id:null,name:p.name+" 副本",has_key:false,api_key:""})),button("删除",()=>W.confirm(`删除 profile「${p.name}」？`,async()=>{const before=W.config.providers;W.config.providers=before.filter(item=>item.id!==p.id);try{await saveConfig();}catch(error){W.config.providers=before;throw error;}profileSettings();}),"danger"))))));
+    if(!profiles.length)editProfile();
+  }
+  async function saveConfig(){W.config=await W.api("/api/config",{method:"PUT",body:JSON.stringify(W.config)});}
+  function editProfile(old={}){
+    W.root.querySelector("#profile-editor")?.remove();
+    const name=input("name",old.name||"");name.required=true;
+    const base=input("base_url",old.base_url||vendors[vendor].base);base.required=true;
+    const key=input("api_key","","password");key.autocomplete="new-password";
+    const proxy=input("proxy_url",old.proxy_url||"");
+    const protocol=select("protocol",[["responses","Responses"],["chat","Chat Completions"]],old.protocol||"responses");
+    const clear=input("clear_key","","checkbox");
+    const models=el("textarea",{name:"models",rows:3},(old.models||[]).join("\n"));
+    const resources=el("div",{class:"actions"},["files","containers","batches","images","audio"].map(id=>field({files:"文件",containers:"容器",batches:"Batch",images:"图片",audio:"音频"}[id],el("input",{type:"checkbox",name:"capability",value:id,checked:old.resources?.includes(id)}))));
+    const status=el("div",{});const submit=el("button",{type:"submit"},"保存 profile");
+    const form=el("form",{id:"profile-editor",class:"card stack","data-profile-editor":""},el("h2",{},old.id?"编辑 profile":"新建 profile"),el("div",{class:"grid-2"},field("Profile 名称",name),field("Base URL",base),field("API key",key,old.has_key?"已保存；留空保留原 key":"保存在本机，不向页面回显"),field("Proxy URL",proxy,"留空使用环境代理；- 表示直连")),old.has_key?field("清除已保存 key",clear):null,["openai","compatible","xai"].includes(vendor)?field("默认文字协议",protocol):null,field("常用模型（每行一个实际模型 ID）",models),vendor==="compatible"?el("div",{},el("p",{},"开启中转站已支持的能力"),resources):null,el("div",{class:"actions"},submit,button("取消",()=>form.remove())),status);
+    form.addEventListener("submit",async event=>{event.preventDefault();submit.disabled=true;const snapshot=structuredClone(W.config);try{const p={id:old.id||"p-"+crypto.randomUUID(),kind:vendor,name:name.value.trim(),base_url:base.value.trim(),proxy_url:proxy.value.trim(),api_key:key.value,clear_key:clear.checked,has_key:old.has_key||false,models:models.value.split(/\r?\n/).map(x=>x.trim()).filter(Boolean),protocol:protocol.value,resources:[...resources.querySelectorAll("input:checked")].map(x=>x.value)};const index=W.config.providers.findIndex(x=>x.id===p.id);if(index>=0)W.config.providers[index]=p;else W.config.providers.push(p);await saveConfig();profileSettings();W.root.prepend(W.notice("Profile 已保存。"));}catch(error){W.config=snapshot;status.replaceChildren(W.notice(error.message,true));}finally{submit.disabled=false;}});
+    W.root.append(form);name.focus();
+  }
+  async function settings(){const saveResponses=input("save_responses","","checkbox");saveResponses.checked=W.config.save_responses;const theme=select("theme",[["sand","燕麦"],["rose","玫瑰灰"],["sage","鼠尾草"],["dusk","暮色"]],localStorage.getItem("webui-theme")||"sand");theme.onchange=()=>{localStorage.setItem("webui-theme",theme.value);location.reload();};W.root.replaceChildren(W.heading("全局设置","服务商的 key 和地址在各自的 profile 中配置。"),el("section",{class:"card stack"},field("主题",theme),field("默认保存响应正文日志",saveResponses,"请求日志始终保留；响应正文可能包含较大的媒体数据。"),button("保存设置",async()=>{try{W.config.save_responses=saveResponses.checked;await saveConfig();W.root.prepend(W.notice("设置已保存。"));}catch(error){W.fail(error);}})));}
+  async function logs() {
+    const rows=await W.api("/api/logs");
+    const detail=el("section",{id:"log-detail",class:"card log-detail",hidden:""});
+    async function show(log) {
       try {
-        let params;
-        try { params = JSON.parse(advanced.value || "{}"); } catch { throw new Error("完整原生 JSON 无法解析。"); }
-        if (!fullJSON.querySelector("input").checked) for (const [name, input] of controls) {
-          const raw = input.value;
-          if (raw === "" && !(name in defaults)) { delete params[name]; continue; }
-          if (typeof defaults[name] === "boolean") params[name] = raw === "true";
-          else if (defaults[name] && typeof defaults[name] === "object") { try { params[name] = JSON.parse(raw); } catch { throw new Error(`${friendlyLabel(name)} 不是有效 JSON。`); } }
-          else if (typeof defaults[name] === "number" && raw !== "") params[name] = Number(raw);
-          else params[name] = raw;
-        }
-        let body, headers;
-        const uploads = [...form.querySelectorAll("input[type=file]")];
-        if (uploads.length) {
-          body = new FormData(); body.append("provider_id", provider.value); body.append("params", JSON.stringify(params)); body.append("save_response", String(save.querySelector("input").checked));
-          for (const upload of uploads) for (const file of upload.files) body.append(upload.name, file, file.name);
-        } else { headers = { "Content-Type": "application/json" }; body = JSON.stringify({ provider_id: provider.value, params, save_response: save.querySelector("input").checked }); }
-        const response = await fetch(`/api/operations/${encodeURIComponent(operation.id)}`, { method: "POST", credentials: "same-origin", headers, body });
-        if (!response.ok) throw new Error(await errorText(response));
-        const contentType = response.headers.get("content-type") || "";
-        if (operation.binary || !contentType.includes("json")) {
-          const blob = await response.blob(); const url = URL.createObjectURL(blob); const link = el("a", { href: url, download: filenameFromDisposition(response.headers.get("content-disposition")) || operation.id, class: "button secondary" }, "保存下载");
-          output.replaceChildren(link); output.hidden = false; setTimeout(() => URL.revokeObjectURL(url), 60000);
-        } else { output.textContent = pretty(await response.json()); output.hidden = false; }
-      } catch (error) { output.textContent = error.message || String(error); output.hidden = false; }
-      finally { submit.disabled = false; }
-    });
-    form.prepend(field("服务商", provider));
-    return el("article", { class: "card operation-card" }, el("div", { class: "section-head" }, el("h2", {}, operationTitle(operation)), el("span", { class: "badge" }, operation.id)), form);
+        const data=await W.api(`/api/logs/${log.id}`);
+        detail.removeAttribute("hidden");
+        detail.replaceChildren(el("h2",{},"请求详情"),el("pre",{},pretty(data.metadata)),data.requests.map(req=>el("div",{},
+          el("h3",{},"Request body"),el("pre",{},req.request_body||"（空）"),
+          el("a",{href:`/api/logs/${log.id}/${req.id}/request.body`,download:"request.body"},"下载完整请求正文"),
+          el("h3",{},"Response body"),el("pre",{},req.response_body||"未保存响应正文")
+        )));
+      } catch(error) {W.fail(error);}
+    }
+    W.root.replaceChildren(W.heading("请求日志","查看各 profile 的请求与响应。"),el("section",{class:"card"},rows.length?rows.map(log=>el("div",{class:"log-row"},
+      el("strong",{},log.operation),el("span",{},W.config.providers.find(p=>p.id===log.provider_id)?.name||log.provider_id),
+      el("span",{class:"badge"},log.status),button("查看",()=>show(log))
+    )):el("p",{class:"empty"},"还没有请求记录。")),detail);
   }
-  function filenameFromDisposition(value) { const match = /filename\*?=(?:UTF-8''|\")?([^";]+)/i.exec(value || ""); return match ? decodeURIComponent(match[1].replaceAll('"', "")) : ""; }
-  function renderOperations(group) {
-    clear(root);
-    const titles = { files: ["文件", "上传、查询、下载与删除 provider 文件。"], containers: ["容器", "管理容器及容器内文件。"], batches: ["批处理", "创建、查询、取消与下载批处理结果。"], native: ["原生操作", "直接使用 Responses、Chat、图片和音频能力。"] };
-    const groups = group === "native" ? ["responses", "chat", "images", "audio"] : [group];
-    const operations = state.operations.filter(op => groups.includes(op.group));
-    root.append(heading(...titles[group]), operations.length ? el("div", { class: "operation-list" }, ...operations.map(operationCard)) : el("div", { class: "card empty" }, el("h2", {}, "没有可用操作"), el("p", {}, "操作目录尚未提供这一组能力。")));
-  }
-
-  async function initLogs() {
-    const logs = await api("/api/logs"); renderLogs(logs);
-  }
-  function renderLogs(logs) {
-    clear(root);
-    const list = el("section", { class: "card" });
-    if (!logs.length) list.append(el("div", { class: "empty" }, el("h2", {}, "还没有请求日志"), el("p", {}, "发起对话或原生操作后，这里会记录请求。")));
-    for (const log of logs) list.append(el("div", { class: "log-row" }, el("div", {}, el("strong", {}, log.operation), el("div", { class: "muted small" }, log.id)), el("span", {}, log.provider_id), el("span", {}, time(log.started_at)), el("div", { class: "actions" }, el("span", { class: "badge " + (log.status === "complete" ? "good" : "") }, log.status), button("查看", () => showLog(log.id), "secondary"))));
-    root.append(heading("请求日志", "请求正文始终记录；响应正文是否保存由全局默认和每次操作开关决定。", button("刷新", initLogs, "secondary")), list, el("section", { id: "log-detail", class: "log-detail" }));
-  }
-  async function showLog(id) {
-    const target = root.querySelector("#log-detail"); clear(target); target.append(el("div", { class: "loading-card" }, "正在读取日志…"));
-    try {
-      const detail = await api(`/api/logs/${encodeURIComponent(id)}`); clear(target);
-      const card = el("article", { class: "card" }, el("div", { class: "section-head" }, el("h2", {}, "日志详情"), el("span", { class: "badge" }, id)), el("h3", {}, "操作元数据"), el("pre", {}, pretty(detail.metadata)));
-      for (const request of detail.requests || []) {
-        const reqDownload = `/api/logs/${encodeURIComponent(id)}/${encodeURIComponent(request.id)}/request.body`;
-        const resDownload = `/api/logs/${encodeURIComponent(id)}/${encodeURIComponent(request.id)}/response.body`;
-        const responseSaved = Boolean(detail.metadata?.save_response || request.response_body || request.response_truncated);
-        card.append(el("details", { open: true }, el("summary", {}, `HTTP 请求 ${request.id}`), el("h3", {}, "Request metadata"), el("pre", {}, pretty(request.request)), el("h3", {}, "Request body"), el("pre", {}, request.request_body || "（空或二进制内容，请下载原始正文查看）"), el("a", { href: reqDownload, class: "button secondary", download: "" }, request.request_truncated ? "下载完整请求正文" : "下载原始请求正文"),
-          el("h3", {}, "Response metadata"), el("pre", {}, pretty(request.response)), el("h3", {}, "Response body"), el("pre", {}, request.response_body || "（未保存或为空）"), responseSaved ? el("a", { href: resDownload, class: "button secondary", download: "" }, request.response_truncated ? "下载完整响应正文" : "下载原始响应正文") : null));
-      }
-      target.append(card); target.scrollIntoView({ behavior: "smooth", block: "start" });
-    } catch (error) { clear(target); fail(error, target); }
-  }
-
-  const starters = { settings: initSettings, chat: initChat, files: () => initOperations("files"), containers: () => initOperations("containers"), batches: () => initOperations("batches"), native: () => initOperations("native"), logs: initLogs };
-  Promise.resolve(starters[page]?.()).catch(error => { clear(root); fail(error); root.append(el("div", { class: "card empty" }, el("h1", {}, "页面暂时无法载入"), el("p", {}, "你的输入尚未被清除，可以重试或刷新页面。"), button("重试", () => location.reload(), "secondary"))); });
+  async function boot(){try{W.config=await W.api("/api/config");if(vendor&&!vendors[vendor])throw new Error("服务商入口不存在");if(profileID){W.profile=W.config.providers.find(p=>p.id===profileID&&p.kind===vendor);if(!W.profile)throw new Error("此服务商下找不到这个 profile，请重新选择。");sessionStorage.setItem(`wb-profile-${vendor}`,profileID);}else if(vendor&&feature!=="profiles"){const list=W.config.providers.filter(p=>p.kind===vendor);if(list.length){const remembered=sessionStorage.getItem(`wb-profile-${vendor}`);location.replace(W.url("chat",list.find(p=>p.id===remembered)?.id||list[0].id));return;}}
+      W.requestContext=Object.freeze({profileID:W.profile?.id,vendor,revision:W.config.revision});
+      renderNavigation();if(parts[0]==="settings")await settings();else if(parts[0]==="logs")await logs();else if(vendor&&(feature==="profiles"||!W.profile))profileSettings();else if(W.profile){if(!W.menu().some(([id])=>id===feature))throw new Error("当前 profile 没有启用此功能。");if(["files","containers","batches"].includes(feature))await W.resources();else await W.workspace();}else home();
+    }catch(error){W.root.replaceChildren(W.notice(error.message,true),el("a",{href:"/ai"},"返回 AI"));}}
+  document.addEventListener("DOMContentLoaded",boot);
 })();

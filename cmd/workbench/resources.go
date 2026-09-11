@@ -6,35 +6,13 @@ import (
 	"io"
 	"mime"
 	"net/http"
-	"os"
 	"strconv"
-	"strings"
-
-	"github.com/ekk1/mygo/utils/httpserver"
 )
-
-func (a *app) registerResources(s *httpserver.Server) error {
-	if err := s.HandleFunc("GET /api/operations", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, http.StatusOK, operationCatalog)
-	}); err != nil {
-		return err
-	}
-	return s.HandleFunc("POST /api/operations/{operation}", a.runResourceOperation)
-}
 
 type resourceRequest struct {
 	ProviderID   string          `json:"provider_id"`
 	Params       json.RawMessage `json:"params"`
 	SaveResponse *bool           `json:"save_response,omitempty"`
-}
-
-func knownOperation(id string) bool {
-	for _, operation := range operationCatalog {
-		if operation.ID == id {
-			return true
-		}
-	}
-	return false
 }
 
 func parseResourceRequest(w http.ResponseWriter, r *http.Request) (request resourceRequest, uploads resourceUploads, cleanup func(), err error) {
@@ -44,7 +22,7 @@ func parseResourceRequest(w http.ResponseWriter, r *http.Request) (request resou
 		return request, nil, cleanup, fmt.Errorf("invalid Content-Type: %w", parseErr)
 	}
 	if mediaType == "application/json" {
-		err = decodeJSON(w, r, &request)
+		err = decodeJSONLimit(w, r, &request, 64<<20)
 		return request, nil, cleanup, err
 	}
 	if mediaType != "multipart/form-data" {
@@ -93,54 +71,24 @@ func parseResourceRequest(w http.ResponseWriter, r *http.Request) (request resou
 	return request, uploads, cleanup, nil
 }
 
-func (a *app) runResourceOperation(w http.ResponseWriter, r *http.Request) {
-	operation := r.PathValue("operation")
-	if !knownOperation(operation) {
-		apiError(w, http.StatusNotFound, fmt.Errorf("unknown operation %q", operation))
-		return
+type resourceUpload struct {
+	Filename, ContentType string
+	Reader                io.Reader
+}
+type resourceUploads map[string][]resourceUpload
+type resourceDownload struct{ Path, Name, ContentType string }
+type resourceEvent struct {
+	Type string `json:"type"`
+	ID   string `json:"id,omitempty"`
+	Data any    `json:"data"`
+}
+
+func resourceEventData(raw []byte) any {
+	if len(raw) == 0 {
+		return nil
 	}
-	request, uploads, cleanup, err := parseResourceRequest(w, r)
-	defer cleanup()
-	if err != nil {
-		apiError(w, http.StatusBadRequest, err)
-		return
+	if json.Valid(raw) {
+		return json.RawMessage(append([]byte(nil), raw...))
 	}
-	if strings.TrimSpace(request.ProviderID) == "" {
-		apiError(w, http.StatusBadRequest, fmt.Errorf("provider_id is required"))
-		return
-	}
-	client, finish, err := a.providerClient(request.ProviderID, operation, request.SaveResponse)
-	if err != nil {
-		apiError(w, errorStatus(err), err)
-		return
-	}
-	defer client.CloseIdleConnections()
-	result, callErr := dispatchResourceOperation(r.Context(), client, operation, request.Params, uploads)
-	err = finish(callErr)
-	if err != nil {
-		if download, ok := result.(resourceDownload); ok {
-			_ = os.Remove(download.Path)
-		}
-		apiError(w, http.StatusBadGateway, err)
-		return
-	}
-	if download, ok := result.(resourceDownload); ok {
-		defer os.Remove(download.Path)
-		file, openErr := os.Open(download.Path)
-		if openErr != nil {
-			apiError(w, http.StatusInternalServerError, openErr)
-			return
-		}
-		defer file.Close()
-		info, statErr := file.Stat()
-		if statErr != nil {
-			apiError(w, http.StatusInternalServerError, statErr)
-			return
-		}
-		w.Header().Set("Content-Type", "application/octet-stream")
-		w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": download.Name}))
-		http.ServeContent(w, r, download.Name, info.ModTime(), file)
-		return
-	}
-	writeJSON(w, http.StatusOK, result)
+	return string(raw)
 }

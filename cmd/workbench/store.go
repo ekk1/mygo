@@ -23,39 +23,30 @@ var errNotFound = errors.New("未找到记录")
 var errBusy = errors.New("此会话正在生成，请等待或停止后重试")
 
 type provider struct {
-	ID       string   `json:"id"`
-	Name     string   `json:"name"`
-	BaseURL  string   `json:"base_url"`
-	ProxyURL string   `json:"proxy_url"`
-	APIKey   string   `json:"api_key,omitempty"`
-	HasKey   bool     `json:"has_key"`
-	ClearKey bool     `json:"clear_key,omitempty"`
-	Models   []string `json:"models"`
-}
-type route struct {
-	ProviderID string `json:"provider_id"`
-	Model      string `json:"model"`
-	Protocol   string `json:"protocol"`
-}
-type model struct {
-	ID       string  `json:"id"`
-	Name     string  `json:"name"`
-	Featured bool    `json:"featured"`
-	Routes   []route `json:"routes"`
+	Kind      string   `json:"kind"`
+	Protocol  string   `json:"protocol,omitempty"`
+	Resources []string `json:"resources,omitempty"`
+	ID        string   `json:"id"`
+	Name      string   `json:"name"`
+	BaseURL   string   `json:"base_url"`
+	ProxyURL  string   `json:"proxy_url"`
+	APIKey    string   `json:"api_key,omitempty"`
+	HasKey    bool     `json:"has_key"`
+	ClearKey  bool     `json:"clear_key,omitempty"`
+	Models    []string `json:"models"`
 }
 type configuration struct {
 	Revision      int64      `json:"revision"`
 	Providers     []provider `json:"providers"`
-	Models        []model    `json:"models"`
 	SaveResponses bool       `json:"save_responses"`
 }
 type message struct {
+	Request     json.RawMessage `json:"request,omitempty"`
 	ID          string          `json:"id"`
 	ParentID    string          `json:"parent_id"`
 	Role        string          `json:"role"`
 	Text        string          `json:"text"`
 	Status      string          `json:"status"`
-	ModelID     string          `json:"model_id,omitempty"`
 	ProviderID  string          `json:"provider_id,omitempty"`
 	ActualModel string          `json:"actual_model,omitempty"`
 	Protocol    string          `json:"protocol,omitempty"`
@@ -65,6 +56,8 @@ type message struct {
 	Files       []string        `json:"files,omitempty"`
 }
 type session struct {
+	ProfileID string    `json:"profile_id,omitempty"`
+	Operation string    `json:"operation,omitempty"`
 	ID        string    `json:"id"`
 	Title     string    `json:"title"`
 	HeadID    string    `json:"head_id"`
@@ -133,7 +126,7 @@ func openStore(dir string) (*store, error) {
 	if err := os.MkdirAll(filepath.Join(dir, "sessions"), 0700); err != nil {
 		return nil, err
 	}
-	s := &store{dir: dir, config: configuration{Providers: []provider{}, Models: []model{}}, sessions: map[string]*sessionEntry{}}
+	s := &store{dir: dir, config: configuration{Providers: []provider{}}, sessions: map[string]*sessionEntry{}}
 	if err := loadKV(filepath.Join(dir, "config.json"), &s.config); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("load config: %w", err)
 	}
@@ -168,9 +161,6 @@ func (s *store) configSnapshot(redact bool) configuration {
 	c := clone(s.config)
 	if c.Providers == nil {
 		c.Providers = []provider{}
-	}
-	if c.Models == nil {
-		c.Models = []model{}
 	}
 	for i := range c.Providers {
 		c.Providers[i].HasKey = c.Providers[i].APIKey != ""
@@ -214,8 +204,8 @@ func (s *store) persistSession(e *sessionEntry, v session) error {
 	e.data = clone(v)
 	return nil
 }
-func (s *store) createSession(title string) (session, error) {
-	v := session{ID: newID(), Title: strings.TrimSpace(title), UpdatedAt: now(), Messages: []message{}}
+func (s *store) createSession(title, profileID, operation string) (session, error) {
+	v := session{ID: newID(), ProfileID: profileID, Operation: operation, Title: strings.TrimSpace(title), UpdatedAt: now(), Messages: []message{}}
 	if v.Title == "" {
 		v.Title = "新会话"
 	}
@@ -309,7 +299,7 @@ func (s *store) forkSession(id, node, title string) (session, error) {
 	if len(title) > 500 {
 		return session{}, fmt.Errorf("标题过长")
 	}
-	v = session{ID: newID(), Title: title, HeadID: node, Messages: path}
+	v = session{ID: newID(), Title: title, HeadID: node, Messages: path, ProfileID: v.ProfileID, Operation: v.Operation}
 	e := &sessionEntry{}
 	if err = s.persistSession(e, v); err != nil {
 		return session{}, err

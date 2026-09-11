@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"net/url"
 	"path/filepath"
-	"sort"
 	"strings"
 )
 
@@ -27,8 +26,30 @@ func (s *store) saveConfig(next configuration) (configuration, error) {
 			return configuration{}, fmt.Errorf("provider ID 必须唯一且只含字母、数字、横线；名称不能为空")
 		}
 		seen[p.ID] = true
+		if p.Kind == "" {
+			p.Kind = "openai"
+		}
+		defaults := map[string]string{"openai": "https://api.openai.com/v1", "compatible": "", "anthropic": "https://api.anthropic.com/v1", "gemini": "https://generativelanguage.googleapis.com", "xai": "https://api.x.ai/v1"}
+		base, ok := defaults[p.Kind]
+		if !ok {
+			return configuration{}, fmt.Errorf("未知服务商 %q", p.Kind)
+		}
+		if oldProfile, exists := old[p.ID]; exists && oldProfile.Kind != "" && oldProfile.Kind != p.Kind {
+			return configuration{}, fmt.Errorf("profile 所属服务商不能修改，请新建 profile")
+		}
+		if p.Protocol == "" {
+			p.Protocol = "responses"
+		}
+		if p.Protocol != "responses" && p.Protocol != "chat" {
+			return configuration{}, fmt.Errorf("未知协议 %q", p.Protocol)
+		}
+		for _, capability := range p.Resources {
+			if capability != "files" && capability != "containers" && capability != "batches" && capability != "images" && capability != "audio" {
+				return configuration{}, fmt.Errorf("未知兼容能力 %q", capability)
+			}
+		}
 		if p.BaseURL == "" {
-			p.BaseURL = "https://api.openai.com/v1"
+			p.BaseURL = base
 		}
 		u, err := url.Parse(p.BaseURL)
 		if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
@@ -56,29 +77,6 @@ func (s *store) saveConfig(next configuration) (configuration, error) {
 			p.Models = []string{}
 		}
 	}
-	models := map[string]bool{}
-	for i := range next.Models {
-		m := &next.Models[i]
-		if !validID.MatchString(m.ID) || strings.TrimSpace(m.Name) == "" || models[m.ID] {
-			return configuration{}, fmt.Errorf("模型 ID 必须唯一，名称不能为空")
-		}
-		models[m.ID] = true
-		for j := range m.Routes {
-			r := &m.Routes[j]
-			if !seen[r.ProviderID] || strings.TrimSpace(r.Model) == "" {
-				return configuration{}, fmt.Errorf("模型 %s 的线路缺少 provider 或实际模型名", m.Name)
-			}
-			if r.Protocol == "" {
-				r.Protocol = "responses"
-			}
-			if r.Protocol != "responses" && r.Protocol != "chat" {
-				return configuration{}, fmt.Errorf("不支持的生成协议")
-			}
-		}
-		if m.Featured && len(m.Routes) == 0 {
-			return configuration{}, fmt.Errorf("精选模型必须先建立映射")
-		}
-	}
 	next.Revision++
 	if err := saveKV(filepath.Join(s.dir, "config.json"), next); err != nil {
 		return configuration{}, err
@@ -88,15 +86,6 @@ func (s *store) saveConfig(next configuration) (configuration, error) {
 		next.Providers[i].APIKey = ""
 	}
 	return next, nil
-}
-func (s *store) resolveModel(id string) (model, route, error) {
-	c := s.configSnapshot(false)
-	for _, m := range c.Models {
-		if m.ID == id && m.Featured && len(m.Routes) > 0 {
-			return m, m.Routes[0], nil
-		}
-	}
-	return model{}, route{}, fmt.Errorf("请选择已映射的精选模型")
 }
 func (s *store) getProvider(id string) (provider, error) {
 	c := s.configSnapshot(false)
@@ -123,34 +112,4 @@ func (a *app) configAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, v)
-}
-func (a *app) discoverModels(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	c, finish, err := a.providerClient(id, "models.list", nil)
-	if err != nil {
-		apiError(w, 400, err)
-		return
-	}
-	defer c.CloseIdleConnections()
-	res, callErr := c.ListModels(r.Context())
-	if err = finish(callErr); err != nil {
-		apiError(w, 502, err)
-		return
-	}
-	models := []string{}
-	for _, m := range res.Data {
-		models = append(models, m.ID)
-	}
-	sort.Strings(models)
-	cfg := a.store.configSnapshot(false)
-	for i := range cfg.Providers {
-		if cfg.Providers[i].ID == id {
-			cfg.Providers[i].Models = models
-		}
-	}
-	if _, err = a.store.saveConfig(cfg); err != nil {
-		apiError(w, errorStatus(err), err)
-		return
-	}
-	writeJSON(w, 200, map[string]any{"models": models})
 }

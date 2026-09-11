@@ -14,12 +14,11 @@ func TestStoreSeparatePersistenceAndFork(t *testing.T) {
 	}
 	cfg := s.configSnapshot(false)
 	cfg.Providers = []provider{{ID: "p", Name: "Local", APIKey: "secret", BaseURL: "http://localhost:1234/v1"}}
-	cfg.Models = []model{{ID: "m", Name: "Alias", Featured: true, Routes: []route{{ProviderID: "p", Model: "native", Protocol: "responses"}}}}
 	if _, err = s.saveConfig(cfg); err != nil {
 		t.Fatal(err)
 	}
 	before, _ := os.ReadFile(filepath.Join(dir, "config.json"))
-	session, err := s.createSession("Test")
+	session, err := s.createSession("Test", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,16 +63,16 @@ func TestStoreSeparatePersistenceAndFork(t *testing.T) {
 	}
 }
 
-func TestConfigRejectsInvalidMappingAndStaleRevision(t *testing.T) {
+func TestConfigRejectsInvalidProfileAndStaleRevision(t *testing.T) {
 	s, err := openStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 	cfg := s.configSnapshot(false)
 	bad := cfg
-	bad.Models = []model{{ID: "m", Name: "Model", Featured: true, Routes: []route{{ProviderID: "missing", Model: "x", Protocol: "responses"}}}}
+	bad.Providers = []provider{{ID: "p", Name: "", Kind: "openai"}}
 	if _, err = s.saveConfig(bad); err == nil {
-		t.Fatal("missing provider accepted")
+		t.Fatal("invalid profile accepted")
 	}
 	if _, err = s.saveConfig(cfg); err != nil {
 		t.Fatal(err)
@@ -107,7 +106,7 @@ func TestDeletedSessionCannotBeResurrectedByStaleEntry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	v, err := s.createSession("remove")
+	v, err := s.createSession("remove", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}

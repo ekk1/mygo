@@ -1,6 +1,6 @@
 # workbench
 
-使用本仓库 httpserver、webui、kv 和 openai 的个人工作台。页面、脚本和样式编译进单个 Go 二进制，无前端构建步骤或运行时 SDK。
+个人工作台，目前提供 AI 模块。复用仓库 httpserver、httpclient、webui 和 kv，页面和静态资源编译进一个 Go 二进制，无前端构建步骤或运行时 SDK。
 
 ## 构建与运行
 
@@ -21,53 +21,66 @@ go build -o ./bin/workbench ./cmd/workbench
 
 跨机器访问可使用 SSH 本地端口转发，保持服务监听回环地址；也可设置密码并监听 `0.0.0.0:8090` 供可信网络访问。原生 HTTP 服务不自行配置 TLS，同源检查不信任转发头，不能直接置于终止 TLS 的反向代理后。未设密码的本地模式仅接受 `localhost`/回环 IP 的 Host。
 
-## 首次设置与模型映射
+## 导航与首次设置
 
-1. 打开“设置”，添加服务商，填写 API key、API 前缀和 HTTP 代理，保存。官方 API 前缀为 `https://api.openai.com/v1`；代理可填自己的 OpenAI 兼容地址。
-2. 点击“发现全部模型”读取该服务商的原生 `/models` 目录。列表不存在时也能手动填写实际模型名。
-3. 添加逻辑模型，填写你喜欢的显示名称，再建立一条或多条“服务商 → 实际模型名 → Responses/Chat Completions 协议”线路。
-4. 勾选“在对话页精选展示”。工作台只能选择这些有映射的精选模型。管理页保留全部逻辑模型和各服务商的完整目录。
+导航层级是「工作台 → AI → 服务商 → profile → 子功能」。工作台首页保留模块入口，AI 内提供 OpenAI、Anthropic、Google Gemini、xAI 和通用 AI 五个入口。
 
-同一逻辑模型可以映射到多个服务商，第一条线路为默认线路，可调整顺序。客户端不自动切换、重试或降级，失败也不会改用另一条计费线路。API key 保存在本机配置文件，浏览器 GET 不会读到已保存明文；编辑留空保留原 key，显式删除才清空。配置有版本检查，其他页面已更新时会拒绝覆盖，需重新载入后修改。
+1. 进入服务商的「管理 profiles」，新建 profile，填写名称、API key、base URL 和 proxy URL。
+2. 进入文字或其他功能页，在顶部切换 profile。每家可以保存多组凭据。
+3. 直接填写实际模型名，也可点击「发现模型」读取当前 profile 的目录。
+4. 调整当前服务商的原生参数，先「预览请求」，再发送。
 
-`ProxyURL` 留空使用环境代理，`-` 表示直连，支持 http/https/socks5/socks5h。对话、资源、上传、下载和模型发现都使用相应服务商的代理配置。每次上游请求默认 10 分钟超时。
+官方 base URL 默认值：OpenAI 为 `https://api.openai.com/v1`，Anthropic 为 `https://api.anthropic.com/v1`，Gemini 为 `https://generativelanguage.googleapis.com`，xAI 为 `https://api.x.ai/v1`。Gemini 的版本路径由工作台添加。通用 AI 用于 OpenAI 兼容中转站，手填 API 前缀，并显式启用站点支持的图片、音频和资源能力。
 
-## 对话与分支
+API key 保存在本机配置文件，浏览器不会读到已保存的明文；编辑留空保留原 key，清空需勾选明确选项。复制 profile 不复制 key。配置带版本检查，其他页面修改后需刷新再提交。
 
-“对话”支持单次 HTTP 流式输出。每条消息可折叠；“从这里继续”选择下一次请求的父节点，“复制为新会话”复制到该节点为止的祖先路径，原会话不改变。另一分支的消息不会进入本次上下文。会话可重命名、删除，删除只影响本地会话，不删除 OpenAI 云端资源。
+proxy URL 留空使用环境代理，`-` 表示直连，支持 http/https/socks5/socks5h。模型发现、生成、资源上传下载都使用当前 profile 的配置；每次上游请求默认 10 分钟超时。
 
-Responses 模型可以勾选联网搜索、图片生成和代码执行，展开高级设置可修改工具 type、图片工具 model、容器 ID、系统指令和原生 JSON 参数。文件 ID 可反复引用；留空容器 ID 时使用自动环境，填写现有容器 ID 时续用该环境。图片结果直接预览，执行结果和文件引用保留在折叠的原生输出中，可在容器页面下载产物。
+## 独立功能页
 
-Chat Completions 映射使用它自己的原生请求结构，Responses 工具开关禁用；Chat 原生搜索、音频、函数等参数可通过 JSON options 传入，完整结果亦可在原生操作页调用。聊天窗口显示第一条文本 choice；多 choice、音频等完整原生数据请使用原生操作页。
+| 入口 | 独立工作页面 |
+| --- | --- |
+| OpenAI | 文字（Responses / Chat）、图片生成、图片编辑、语音合成、音频转写、音频翻译、文件、容器、Batch |
+| Anthropic | 文字 Messages、文件、Message Batches |
+| Gemini | 文字、图片生成、图片编辑、语音合成、音频转写、视频任务、文件、Batch |
+| xAI | 文字（Responses / Chat）、图片生成、图片编辑、语音合成、音频转写、视频任务、文件、Batch |
+| 通用 AI | 文字（Responses / Chat），以及 profile 明确启用的兼容功能 |
 
-JSON options 保留 native 字段、false 和 0；不能覆盖工作台维护的 model/input/messages/stream/conversation/previous_response_id。选中的工具与同名原生 tools 冲突会报错；需要自定义完整 tools 时关闭便捷工具开关。模型/工具参数支持与否由实际服务商校验。
+参数面板随服务商及功能变化，包含对应的 service tier、采样、推理、输出和工具设置。模型实际支持哪些参数由上游校验。
 
-只有同一个服务商、同一实际模型、同一协议的完整 Responses 输出才复用原生工具内容。更换线路时用普通文本续接，避免传递旧工具 ID；已上传的文件归属原服务商，不会自动重传。取消或失败会保存已收到的文字和错误；同一会话一次只生成一个回答，其他会话与配置独立使用。
+「原生扩展参数」接受 JSON 对象，保留 false、0 和厂商字段；与表单已生成字段重名时报错，避免静默覆盖。实时语音 Live/Realtime 尚未提供页面；Anthropic 没有独立图片生成或 TTS 页面。
 
-## 资源和原生操作
+## 请求预览与文字会话
 
-“文件”“容器”“批处理”各自提供所属服务商选择、参数表单、完整原生 JSON、上传或下载结果。分页是一次一页；列表返回的 `last_id` 可用于下一次 `after`。
+预览使用与发送相同的请求构造逻辑，展示实际 HTTP 方法、URL、body 和上传文件说明，不调用上游、不创建会话。长字符串只在预览展示中折叠，可以展开、复制或下载完整 body；实际发送不截断。multipart 预览展示字段和文件元信息，不读取整份附件；Gemini 文件上传展示启动和传输两个阶段。凭据不会出现在预览中。输入变动会提示重新预览。
 
-- Files：上传、列表、详情、删除、内容下载；上传 purpose 与到期设置遵循原生协议。
-- Containers：创建、列表、详情、删除，内存/到期/网络策略等原生参数，以及文件引用、上传、列表、详情、删除、产物下载。
-- Batch：创建、列表、查询和取消。先在 Files 上传 purpose=batch 的 JSONL，再用其 ID 创建任务；输出与错误文件 ID 通过 Files 下载。没有自动轮询或自动重复提交。
-- 原生操作：Responses 的生成/流式、查询/取消/删除、输入项、token counting/compact；Chat 普通/流式；图片生成/编辑/流式；语音合成、转写、翻译及非实时流式。
+文字会话按 profile 和协议隔离。每次请求只使用选择父节点的祖先路径；「从这里继续」创建分支，「复制为新会话」保留该路径及归属。更换实际模型时保留当前 profile 的用户附件，旧模型的助手工具状态转成普通文本。完整的原生输出和流式事件保存在会话中，可展开检查。
 
-原生操作页保持服务商的完整请求参数，因此其中的 `model` 是实际服务商模型名；日常对话只通过精选逻辑模型。原生 SSE 操作收集完整事件后作为 JSON 展示，对话页则逐段显示文字。二进制响应提供下载。API 返回的外部媒体 URL 可以由调用方直接访问，工作台不提供任意 URL 转发。
+文字支持实时流式输出和停止；停止后保留已经收到的文字与取消状态。同一会话只能同时生成一个回答，活动请求期间禁止删除会话。停止 HTTP 连接不会自动取消已提交的云端异步任务，Batch 取消需在资源页操作。
 
-资源操作只在点击执行后发起，不自动清理、翻页或运行本地程序。图片编辑允许 JSON 文件引用或 multipart 文件；不能混用两种方式。上传请求总计限制 300 MiB，超过 8 MiB 的 multipart 数据使用临时文件，结束后清理。缓冲 API 响应和原生流式事件的累计收集上限默认 256 MiB；媒体下载通过临时文件提供下载。原生操作中途失败时返回错误，已收集的部分事件不作为成功结果展示；需要排查完整接收过程时开启响应日志。
+图片显示预览和下载，语音提供播放器和下载。Gemini PCM 音频包装为 WAV 供浏览器播放。视频页面提交异步任务后可手动查询状态；返回的外部媒体 URL 提供打开链接，Gemini 生成文件通过当前 profile 鉴权下载。工作台不转发任意外部 URL。
 
-未接入 OpenAI 视频、Live/Realtime、MCP、Vector Stores，也未实现 Anthropic/Google/xAI 的原生客户端。
+## 文件、容器与 Batch
+
+资源页按当前 profile 自动读取一页数据，以表格展示文件名、ID、大小、状态、时间和行内操作。支持刷新、前后分页和当前页搜索。
+
+- 文件：上传、详情、复制引用、删除和支持的下载。Gemini 用户上传文件 API 不提供内容下载，页面不显示此操作；生成的视频和 Batch 结果可以下载。
+- 容器：创建、详情、删除，进入容器查看文件；支持上传、引用已有文件 ID、下载和删除。
+- Batch：创建、查询详情、取消和结果下载。OpenAI 使用 purpose=batch 的 JSONL 文件；Anthropic 使用原生请求数组；Gemini 使用模型与输入文件；xAI 支持上传输入文件或创建空任务后追加 batch_requests，结果分页读取。
+
+每次上传或创建都可以预览请求。删除与取消有确认提示。页面不自动翻页、重复提交或清理云端资源。会话删除只影响本地存储。
+
+JSON 原生操作请求上限 64 MiB（包含 Gemini 内联媒体）；文字会话请求上限 4 MiB。multipart 总计限制 300 MiB，超过 8 MiB 使用临时文件，结束后清理。缓冲响应和收集的流式事件累计上限默认 256 MiB；二进制响应通过临时文件下载。
 
 ## 日志与存储
 
-每次实际请求都开启请求记录，无法关闭。响应正文默认不记录，可在设置中修改默认值，也可按次覆盖。关闭时不会创建 `response.body`，而非保存后再删除；response metadata 仍保留状态、字节数等。聊天回复仍作为会话内容保存，与原始 HTTP 响应日志是两回事。
+每次实际请求都开启请求记录，无法关闭。响应正文默认不记录，可在全局设置中开启；底层 API 支持按次覆盖。关闭时仍保留状态、字节数等 response metadata。聊天回复仍作为会话内容保存，与原始 HTTP 响应日志是两回事。
 
 日志页可查操作、provider、时间、状态、request/response metadata 和正文；单个正文预览最多 256 KiB，截断时可下载完整记录。认证头和签名 URL 元信息脱敏，正文原样保留，包含提示词和上传文件。HTTP EOF 标志不表示模型完成；操作状态和会话错误应一并查看。日志写入失败会阻止请求或返回失败，不能据此认为服务端未执行并直接重试。
 
 ```text
 workbench-data/
-  config.json                 # 独立 config KV：provider、key、逻辑模型、日志默认值
+  config.json                 # 独立 config KV：profiles、key、日志默认值
   sessions/<session-id>.json   # 每个会话独立 KV：节点、父关系、输出与状态
   logs/<operation-id>/
     context.json              # 操作归属、时间与结果
@@ -85,23 +98,16 @@ workbench-data/
 
 ## 测试
 
-Go 请求测试全部使用本地假 OpenAI 服务；不需要真实 API key：
+全仓 Go 检查按 [开发约定](../../AGENTS.md#完成改动前) 执行，页面改动还需运行下面的 JS 和浏览器测试。协议测试使用本地假服务，不需要真实 key；尚未使用真实账号逐项联调。
 
 ```sh
-go test ./cmd/workbench ./utils/openai ./utils/internal/aihttp
-go test -race ./cmd/workbench
 node --test utils/webui/request_test.cjs
-```
-
-浏览器测试使用已有 Node、Playwright 和 Chromium，不自动下载。先按 [webui 流程](../../utils/webui/README.md#开发与测试流程) 准备已获授权的测试环境，然后：
-
-```sh
 WORKBENCH_GO=go WORKBENCH_CHROMIUM=/usr/bin/chromium \
   node --test cmd/workbench/browser_test.cjs
 ```
 
-脚本自行编译临时二进制。动态库不在系统搜索路径时，可用 `WORKBENCH_BROWSER_LIBS` 指向已安装浏览器库目录；Node 找不到 Playwright 时按现有环境设置 `NODE_PATH`。这些变量都只选择已有工具和库，不触发安装或下载。
+浏览器测试复用已安装的 Node、Playwright 和 Chromium，启用 sandbox，不自动下载。工具准备遵循 [webui 流程](../../utils/webui/README.md#开发与测试流程)，安装必须另获确认。动态库可由 `WORKBENCH_BROWSER_LIBS` 指定，Playwright 搜索路径可由 `NODE_PATH` 指定；非系统字体环境可设置 `FONTCONFIG_FILE`。
 
-测试脚本自行创建临时数据目录和本地假 provider，覆盖配置、目录发现、逻辑模型、对话、分支、日志、资源及手机布局。运行 Go 程序不需要这些浏览器测试工具。
+浏览器覆盖导航、profile、长输入预览与实际请求一致性、各家协议、文件上传下载删除、容器、Batch、多模态结果、流式停止及桌面/手机布局。临时服务和浏览器由测试清理，截图写入已忽略的 `bin/workbench-browser/`。
 
-验收结果见 [工作台交付记录](../../docs/superpowers/plans/2026-09-11-personal-workbench.md)。主题与手机截图由测试写入 `bin/workbench-browser/`，不纳入版本控制。
+代码职责和内部请求约定见 [开发说明](DEVELOPMENT.md)。

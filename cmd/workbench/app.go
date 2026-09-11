@@ -50,7 +50,10 @@ func errorStatus(err error) int {
 	}
 }
 func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) error {
-	r.Body = http.MaxBytesReader(w, r.Body, 4<<20)
+	return decodeJSONLimit(w, r, dst, 4<<20)
+}
+func decodeJSONLimit(w http.ResponseWriter, r *http.Request, dst any, limit int64) error {
+	r.Body = http.MaxBytesReader(w, r.Body, limit)
 	d := json.NewDecoder(r.Body)
 	d.DisallowUnknownFields()
 	if err := d.Decode(dst); err != nil {
@@ -103,7 +106,7 @@ func newApp(dir, password string) (*app, *httpserver.Server, error) {
 		middleware = append(middleware, httpserver.BasicAuth("workbench", password))
 	}
 	s := httpserver.New(middleware...)
-	routes := map[string]http.HandlerFunc{"GET /api/config": a.configAPI, "PUT /api/config": a.configAPI, "POST /api/providers/{id}/discover": a.discoverModels, "GET /api/sessions": a.sessionsAPI, "POST /api/sessions": a.sessionsAPI, "GET /api/sessions/{id}": a.sessionAPI, "PATCH /api/sessions/{id}": a.sessionAPI, "DELETE /api/sessions/{id}": a.sessionAPI, "POST /api/sessions/{id}/fork": a.forkAPI, "POST /api/sessions/{id}/messages": a.sendMessage, "GET /api/logs": a.listLogs, "GET /api/logs/{id}": a.getLog, "GET /api/logs/{id}/{request}/{file}": a.downloadLog}
+	routes := map[string]http.HandlerFunc{"POST /api/sessions/{id}/native": a.sendConversation, "GET /api/config": a.configAPI, "PUT /api/config": a.configAPI, "GET /api/sessions": a.sessionsAPI, "POST /api/sessions": a.sessionsAPI, "GET /api/sessions/{id}": a.sessionAPI, "PATCH /api/sessions/{id}": a.sessionAPI, "DELETE /api/sessions/{id}": a.sessionAPI, "POST /api/sessions/{id}/fork": a.forkAPI, "GET /api/logs": a.listLogs, "GET /api/logs/{id}": a.getLog, "GET /api/logs/{id}/{request}/{file}": a.downloadLog}
 	for path, fn := range routes {
 		if err = s.HandleFunc(path, fn); err != nil {
 			s.Close()
@@ -118,7 +121,7 @@ func newApp(dir, password string) (*app, *httpserver.Server, error) {
 		s.Close()
 		return nil, nil, err
 	}
-	if err = a.registerResources(s); err != nil {
+	if err = a.registerNative(s); err != nil {
 		s.Close()
 		return nil, nil, err
 	}
@@ -126,17 +129,38 @@ func newApp(dir, password string) (*app, *httpserver.Server, error) {
 }
 func (a *app) sessionsAPI(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "GET" {
-		writeJSON(w, 200, a.store.listSessions())
+		sessions := a.store.listSessions()
+		if profileID := r.URL.Query().Get("profile_id"); profileID != "" {
+			filtered := []session{}
+			for _, item := range sessions {
+				if item.ProfileID == profileID {
+					filtered = append(filtered, item)
+				}
+			}
+			sessions = filtered
+		}
+		writeJSON(w, 200, sessions)
 		return
 	}
 	var in struct {
-		Title string `json:"title"`
+		Title     string `json:"title"`
+		ProfileID string `json:"profile_id"`
+		Operation string `json:"operation"`
 	}
 	if err := decodeJSON(w, r, &in); err != nil {
 		apiError(w, 400, err)
 		return
 	}
-	v, err := a.store.createSession(in.Title)
+	p, err := a.store.getProvider(in.ProfileID)
+	if err != nil {
+		apiError(w, 400, err)
+		return
+	}
+	if err := validateConversationOperation(p.Kind, in.Operation); err != nil {
+		apiError(w, 400, err)
+		return
+	}
+	v, err := a.store.createSession(in.Title, in.ProfileID, in.Operation)
 	if err != nil {
 		apiError(w, 500, err)
 		return
