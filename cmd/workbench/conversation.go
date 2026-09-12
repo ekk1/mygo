@@ -23,6 +23,9 @@ func conversationRequest(operation string, raw json.RawMessage, path []message) 
 		return nil, fmt.Errorf("模型不能为空")
 	}
 	var items []any
+	if operation == "responses.create" && (strings.TrimSpace(stringValue(body["previous_response_id"])) != "" || body["conversation"] != nil) {
+		path = nil
+	}
 	appendArray := func(value any) {
 		switch v := value.(type) {
 		case []any:
@@ -32,39 +35,63 @@ func conversationRequest(operation string, raw json.RawMessage, path []message) 
 		}
 	}
 	for _, m := range path {
-		if m.Role == "assistant" && m.Status != "complete" && m.Text == "" {
+		if m.Role == "assistant" && m.Text == "" && (m.Status != "complete" || m.ActualModel != model) {
 			continue
 		}
 		var req, out map[string]any
 		_ = json.Unmarshal(m.Request, &req)
 		_ = json.Unmarshal(m.Output, &out)
-		same := m.Role == "user" || (m.ActualModel == model && m.Status == "complete")
+		sameModel := m.ActualModel == model
+		same := m.Role == "user" || (sameModel && m.Status == "complete")
 		switch operation {
 		case "responses.create":
 			if m.Role == "user" && same && req["input"] != nil {
-				appendArray(req["input"])
+				appendResponseHistory(&items, req["input"], sameModel)
 			} else if m.Role == "assistant" && same && out["output"] != nil {
 				appendArray(out["output"])
 			} else {
 				items = append(items, map[string]any{"role": m.Role, "content": m.Text})
 			}
-		case "chat.create", "messages.create":
+		case "chat.create":
+			if m.Role == "user" && same && req["messages"] != nil {
+				if msgs, ok := req["messages"].([]any); ok {
+					for _, msg := range msgs {
+						if entry, ok := msg.(map[string]any); ok {
+							role, _ := entry["role"].(string)
+							if role == "user" || ((role == "tool" || role == "function") && sameModel) {
+								items = append(items, msg)
+							}
+						}
+					}
+				}
+			} else if m.Role == "assistant" && same {
+				if assistant := firstChatAssistantMessage(out); assistant != nil {
+					items = append(items, assistant)
+				} else {
+					items = append(items, map[string]any{"role": m.Role, "content": m.Text})
+				}
+			} else {
+				items = append(items, map[string]any{"role": m.Role, "content": m.Text})
+			}
+		case "messages.create":
 			if m.Role == "user" && same && req["messages"] != nil {
 				if msgs, ok := req["messages"].([]any); ok {
 					for _, msg := range msgs {
 						if entry, ok := msg.(map[string]any); ok && entry["role"] == "user" {
-							items = append(items, msg)
+							if filtered := anthropicUserHistory(entry, sameModel); filtered != nil {
+								items = append(items, filtered)
+							}
 						}
 					}
 				}
-			} else if operation == "messages.create" && m.Role == "assistant" && same && out["content"] != nil {
+			} else if m.Role == "assistant" && same && out["content"] != nil {
 				items = append(items, map[string]any{"role": "assistant", "content": out["content"]})
 			} else {
 				items = append(items, map[string]any{"role": m.Role, "content": m.Text})
 			}
 		case "content.generate":
 			if m.Role == "user" && same && req["contents"] != nil {
-				appendArray(req["contents"])
+				appendGeminiHistory(&items, req["contents"], sameModel)
 			} else if m.Role == "assistant" && same && out["candidates"] != nil {
 				if candidates, ok := out["candidates"].([]any); ok && len(candidates) > 0 {
 					if c, ok := candidates[0].(map[string]any); ok && c["content"] != nil {
@@ -114,6 +141,130 @@ func conversationRequest(operation string, raw json.RawMessage, path []message) 
 	}
 	return json.Marshal(body)
 }
+
+func conversationProviderRequest(kind, operation string, raw json.RawMessage, path []message) (json.RawMessage, error) {
+	result, err := conversationRequest(operation, raw, path)
+	if err != nil || kind != "xai" || operation != "responses.create" {
+		return result, err
+	}
+	var body map[string]any
+	if err := json.Unmarshal(result, &body); err != nil {
+		return nil, err
+	}
+	include, ok := body["include"].([]any)
+	if body["include"] != nil && !ok {
+		return nil, fmt.Errorf("include 必须为数组")
+	}
+	for _, item := range include {
+		if item == "reasoning.encrypted_content" {
+			return result, nil
+		}
+	}
+	body["include"] = append(include, "reasoning.encrypted_content")
+	return json.Marshal(body)
+}
+
+func stringValue(value any) string {
+	text, _ := value.(string)
+	return text
+}
+
+func appendResponseHistory(items *[]any, value any, sameModel bool) {
+	if text, ok := value.(string); ok {
+		*items = append(*items, map[string]any{"role": "user", "content": text})
+		return
+	}
+	list, _ := value.([]any)
+	for _, item := range list {
+		entry, _ := item.(map[string]any)
+		typeName, _ := entry["type"].(string)
+		if !sameModel && (strings.HasSuffix(typeName, "_call_output") || typeName == "mcp_approval_response") {
+			continue
+		}
+		*items = append(*items, item)
+	}
+}
+
+func anthropicUserHistory(message map[string]any, sameModel bool) map[string]any {
+	if sameModel {
+		return message
+	}
+	content, ok := message["content"].([]any)
+	if !ok {
+		return message
+	}
+	filtered := make([]any, 0, len(content))
+	for _, item := range content {
+		block, _ := item.(map[string]any)
+		if block["type"] == "tool_result" {
+			continue
+		}
+		filtered = append(filtered, item)
+	}
+	if len(filtered) == 0 {
+		return nil
+	}
+	copy := make(map[string]any, len(message))
+	for key, value := range message {
+		copy[key] = value
+	}
+	copy["content"] = filtered
+	return copy
+}
+
+func appendGeminiHistory(items *[]any, value any, sameModel bool) {
+	list, _ := value.([]any)
+	for _, item := range list {
+		content, _ := item.(map[string]any)
+		parts, ok := content["parts"].([]any)
+		if sameModel || !ok {
+			*items = append(*items, item)
+			continue
+		}
+		filtered := make([]any, 0, len(parts))
+		for _, part := range parts {
+			block, _ := part.(map[string]any)
+			if block["functionResponse"] != nil || block["toolResponse"] != nil {
+				continue
+			}
+			filtered = append(filtered, part)
+		}
+		if len(filtered) == 0 {
+			continue
+		}
+		copy := make(map[string]any, len(content))
+		for key, field := range content {
+			copy[key] = field
+		}
+		copy["parts"] = filtered
+		*items = append(*items, copy)
+	}
+}
+
+func firstChatAssistantMessage(output map[string]any) map[string]any {
+	choices, _ := output["choices"].([]any)
+	if len(choices) == 0 {
+		return nil
+	}
+	choice, _ := choices[0].(map[string]any)
+	message, _ := choice["message"].(map[string]any)
+	if message == nil {
+		return nil
+	}
+	assistant := map[string]any{"role": "assistant"}
+	for _, key := range []string{"content", "name", "refusal", "tool_calls", "function_call", "reasoning_content"} {
+		if value, ok := message[key]; ok {
+			assistant[key] = value
+		}
+	}
+	if audio, ok := message["audio"].(map[string]any); ok {
+		if id, _ := audio["id"].(string); id != "" {
+			assistant["audio"] = map[string]any{"id": id}
+		}
+	}
+	return assistant
+}
+
 func nativeText(value any) string {
 	body, _ := value.(map[string]any)
 	var texts []string
@@ -128,7 +279,7 @@ func nativeText(value any) string {
 				visit(item)
 			}
 		case map[string]any:
-			if text, ok := x["text"].(string); ok {
+			if text, ok := x["text"].(string); ok && x["thought"] != true {
 				texts = append(texts, text)
 			}
 			if role, ok := x["role"].(string); ok && role == "assistant" {
@@ -183,7 +334,7 @@ func (a *app) sendConversation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.PathValue("id") == "new" && r.URL.Query().Get("preview") == "1" {
-		params, err := conversationRequest(in.Operation, in.Params, nil)
+		params, err := conversationProviderRequest(p.Kind, in.Operation, in.Params, nil)
 		if err != nil {
 			apiError(w, 400, err)
 			return
@@ -224,7 +375,7 @@ func (a *app) sendConversation(w http.ResponseWriter, r *http.Request) {
 		apiError(w, 400, err)
 		return
 	}
-	params, err := conversationRequest(in.Operation, in.Params, path)
+	params, err := conversationProviderRequest(p.Kind, in.Operation, in.Params, path)
 	if err != nil {
 		e.mu.Unlock()
 		apiError(w, 400, err)

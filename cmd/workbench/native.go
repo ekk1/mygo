@@ -31,6 +31,8 @@ type nativeRequestPreview struct {
 	Body        any                    `json:"body,omitempty"`
 	Files       []nativeFilePreview    `json:"files"`
 	Requests    []nativeRequestPreview `json:"requests,omitempty"`
+	Curl        string                 `json:"curl"`
+	CurlError   string                 `json:"curl_error,omitempty"`
 }
 
 type nativeRequestSpec struct {
@@ -146,6 +148,10 @@ func nativePreview(p provider, operation string, params json.RawMessage, uploads
 	spec, err := buildNativeRequest(p, operation, params, uploads)
 	if err != nil {
 		return nil, err
+	}
+	spec.preview.Curl, err = nativeCurl(p, spec)
+	if err != nil {
+		spec.preview.CurlError = err.Error()
 	}
 	return spec.preview, nil
 }
@@ -837,6 +843,29 @@ func nativeHeaders(kind, key, operation string) http.Header {
 		h.Set("Authorization", "Bearer "+key)
 	}
 	return h
+}
+
+// nativeGeminiStageHeaders is shared by sending and curl export after the
+// request builder has validated the single Gemini file upload.
+func nativeGeminiStageHeaders(spec nativeRequestSpec, finalize bool) http.Header {
+	headers := spec.headers.Clone()
+	file := spec.preview.Files[0]
+	contentType := file.ContentType
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	if finalize {
+		headers.Set("Content-Type", contentType)
+		headers.Set("X-Goog-Upload-Offset", "0")
+		headers.Set("X-Goog-Upload-Command", "upload, finalize")
+	} else {
+		headers.Set("Content-Type", "application/json")
+		headers.Set("X-Goog-Upload-Protocol", "resumable")
+		headers.Set("X-Goog-Upload-Command", "start")
+		headers.Set("X-Goog-Upload-Header-Content-Length", strconv.FormatInt(file.Size, 10))
+		headers.Set("X-Goog-Upload-Header-Content-Type", contentType)
+	}
+	return headers
 }
 
 func defaultNativeFilename(operation string) string {

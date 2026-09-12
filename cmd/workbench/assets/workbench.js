@@ -1,6 +1,5 @@
 "use strict";
 (() => {
-  const css = document.createElement("link"); css.rel = "stylesheet"; css.href = "/assets/workbench.css"; document.head.append(css);
   const el = (tag, attrs, ...children) => {
     const node = document.createElement(tag);
     for (const [key, value] of Object.entries(attrs || {})) {
@@ -66,18 +65,29 @@
   W.blobURL=blob=>{const url=URL.createObjectURL(blob);objectURLs.add(url);return url;};
   window.addEventListener("pagehide",()=>{for(const url of objectURLs)URL.revokeObjectURL(url);});
   W.download=(blob,name)=>el("a",{href:W.blobURL(blob),download:name,class:"button secondary"},"下载 "+name);
-  W.jsonDetails=value=>el("details",{class:"native-details"},el("summary",{},"原生结果"),el("pre",{},pretty(value)));
-  W.result=(value)=>{
+  W.jsonDetails=value=>{
+    const details=el("details",{class:"native-details"},el("summary",{},"原生结果"));let rendered=false;
+    details.addEventListener("toggle",()=>{if(details.open&&!rendered){details.append(el("pre",{},pretty(value)));rendered=true;}});
+    return details;
+  };
+  W.mediaPlaceholder=label=>el("span",{class:"media-placeholder"},el("span",{"aria-hidden":"true",class:"media-symbol"},"▧"),el("span",{},label));
+  W.result=(value,{lazyMedia=false}={})=>{
     const box=el("div",{class:"result-content"});
+    const media=(kind,render)=>{
+      if(!lazyMedia){render(box);return;}
+      const label=el("span",{},"展开"+kind),details=el("details",{class:"media-preview","data-media-kind":kind},el("summary",{},W.mediaPlaceholder(label)));let rendered=false;
+      details.addEventListener("toggle",()=>{label.textContent=(details.open?"收起":"展开")+kind;if(details.open&&!rendered){const content=el("div",{class:"media-content"});render(content);details.append(content);rendered=true;}});
+      box.append(details);
+    };
     if(value?.blob){const type=value.blob.type;if(type.startsWith("audio/"))box.append(el("audio",{controls:"",src:W.blobURL(value.blob)}));else if(type.startsWith("video/"))box.append(el("video",{controls:"",src:W.blobURL(value.blob)}));box.append(W.download(value.blob,value.filename));return box;}
     if(typeof value==="string"){box.append(el("pre",{class:"result-text"},value),W.copyButton(value),W.download(new Blob([value],{type:"text/plain"}),"result.txt"));return box;}
     let assets=0;const texts=[];
     const visit=(v,key="")=>{if(!v||typeof v!=="object")return;
-      if(typeof v.text==="string")texts.push(v.text);
+      if(typeof v.text==="string"&&v.thought!==true)texts.push(v.text);
       if(typeof v.output_text==="string")texts.push(v.output_text);
       if(v.message?.content && typeof v.message.content==="string")texts.push(v.message.content);
-      if((v.b64_json || v.type==="image_generation_call"&&v.result) && assets++<20){const bytes=v.b64_json||v.result,format=bytes.startsWith("/9j/")?"jpeg":bytes.startsWith("UklGR")?"webp":"png",uri="data:image/"+format+";base64,"+bytes;box.append(el("img",{src:uri,alt:"生成的图片"}),el("a",{href:uri,download:"image."+format},"下载图片"));}
-      const inline=v.inlineData||v.inline_data;if(inline?.data && assets++<20){const mime=inline.mimeType||inline.mime_type||"application/octet-stream";const raw=Uint8Array.from(atob(inline.data),c=>c.charCodeAt(0));let blob=new Blob([raw],{type:mime});if(mime.startsWith("audio/L16")||mime.startsWith("audio/pcm"))blob=W.wav(raw,Number(mime.match(/rate=(\d+)/)?.[1]||24000));const url=W.blobURL(blob);if(mime.startsWith("image/"))box.append(el("img",{src:url,alt:"生成的图片"}));if(mime.startsWith("audio/"))box.append(el("audio",{src:url,controls:""}));box.append(W.download(blob,mime.startsWith("audio/")?"speech.wav":"output.png"));}
+      if((v.b64_json || v.type==="image_generation_call"&&v.result) && assets++<20)media("图片",target=>{const bytes=v.b64_json||v.result,format=bytes.startsWith("/9j/")?"jpeg":bytes.startsWith("UklGR")?"webp":"png",uri="data:image/"+format+";base64,"+bytes;target.append(el("img",{src:uri,alt:"生成的图片",loading:"lazy",decoding:"async"}),el("a",{href:uri,download:"image."+format},"下载图片"));});
+      const inline=v.inlineData||v.inline_data;if(inline?.data && assets++<20){const mime=inline.mimeType||inline.mime_type||"application/octet-stream";media(mime.startsWith("image/")?"图片":mime.startsWith("audio/")?"音频":"附件",target=>{const raw=Uint8Array.from(atob(inline.data),c=>c.charCodeAt(0));let blob=new Blob([raw],{type:mime});if(mime.startsWith("audio/L16")||mime.startsWith("audio/pcm"))blob=W.wav(raw,Number(mime.match(/rate=(\d+)/)?.[1]||24000));const url=W.blobURL(blob);if(mime.startsWith("image/"))target.append(el("img",{src:url,alt:"生成的图片",loading:"lazy",decoding:"async"}));if(mime.startsWith("audio/"))target.append(el("audio",{src:url,controls:"",preload:"none"}));target.append(W.download(blob,mime.startsWith("audio/")?"speech.wav":"output.png"));});}
       if(W.vendor==="gemini"&&typeof v.uri==="string") {
         try {const media=new URL(v.uri),base=new URL(W.profile.base_url);const match=media.pathname.match(/\/files\/([^/:]+)(?::download)?$/);if(media.origin===base.origin&&match){box.append(button("下载生成的视频",async event=>{const trigger=event.currentTarget;trigger.disabled=true;try{const data=await W.native("files.download",{file_id:"files/"+match[1],filename:"video.mp4"});box.append(W.result(data));}catch(error){W.fail(error,box);}finally{trigger.disabled=false;}}));}}catch{}
       }
@@ -87,10 +97,12 @@
   };
   W.wav=(bytes,rate)=>{const header=new ArrayBuffer(44);const v=new DataView(header);const str=(offset,s)=>[...s].forEach((c,i)=>v.setUint8(offset+i,c.charCodeAt(0)));str(0,"RIFF");v.setUint32(4,36+bytes.length,true);str(8,"WAVEfmt ");v.setUint32(16,16,true);v.setUint16(20,1,true);v.setUint16(22,1,true);v.setUint32(24,rate,true);v.setUint32(28,rate*2,true);v.setUint16(32,2,true);v.setUint16(34,16,true);str(36,"data");v.setUint32(40,bytes.length,true);return new Blob([header,bytes],{type:"audio/wav"});};
   W.preview = (value) => {
+    const {curl,curl_error,...request}=value;
     let expanded=false;const truncate=v=>typeof v==="string" && v.length>2000 ? v.slice(0,2000)+`… [省略 ${v.length-2000} 字符，仅预览折叠]` : Array.isArray(v)?v.map(truncate):v&&typeof v==="object"?Object.fromEntries(Object.entries(v).map(([k,x])=>[k,truncate(x)])):v;
-    const pre=el("pre",{"data-request-preview":""},pretty(truncate(value)));
-    return el("section",{class:"request-preview"},el("div",{class:"section-head"},el("h3",{},"发送前 · 原始请求"),button("展开完整内容",event=>{expanded=!expanded;pre.textContent=pretty(expanded?value:truncate(value));event.currentTarget.textContent=expanded?"折叠长内容":"展开完整内容";})),el("p",{class:"small muted"},"这是上游请求；长文本只在这里折叠，实际发送保持完整。"),pre,W.copyButton(()=>pretty(value.body??value),"复制完整请求体"),W.download(new Blob([pretty(value.body??value)],{type:"application/json"}),"request.json"));
+    const pre=el("pre",{"data-request-preview":""},pretty(truncate(request)));
+    return el("section",{class:"request-preview"},el("div",{class:"actions preview-actions"},button("展开完整内容",event=>{expanded=!expanded;pre.textContent=pretty(expanded?request:truncate(request));event.currentTarget.textContent=expanded?"折叠长内容":"展开完整内容";}),W.copyButton(()=>pretty(request.body??request),"复制完整请求体"),curl?W.copyButton(curl,"复制 curl"):null,W.download(new Blob([pretty(request.body??request)],{type:"application/json"}),"request.json")),el("p",{class:"small muted"},"长文本仅在预览中折叠，复制和实际发送均保持完整。"),curl?el("p",{class:"small muted"},"curl 使用凭据和文件路径变量，请按命令中的注释设置后运行。"):null,curl_error?W.notice(curl_error,true):null,pre);
   };
+  W.showPreview=(value,trigger)=>{const modal=W.dialog("请求预览",trigger);modal.dialog.classList.add("preview-dialog");modal.body.append(W.preview(value));return modal;};
   W.lock = container => {
     const states=[...container.querySelectorAll("input,select,textarea,button")].map(control=>[control,control.disabled]);
     for(const [control] of states)control.disabled=true;
@@ -110,12 +122,17 @@
     },kind);return node;
   };
   W.copyButton = (text,label="复制文字") => {
-    const node=W.action(label,async()=>{const value=typeof text==="function"?text():text;if(!navigator.clipboard){const modal=W.dialog("复制内容"),content=el("textarea",{rows:8,readonly:""},value);modal.body.append(field("待复制内容",content),el("p",{class:"small muted"},"当前浏览器不支持自动复制，请使用键盘或长按复制。"));content.focus();content.select();return;}await navigator.clipboard.writeText(value);node.textContent="已复制";setTimeout(()=>{node.textContent=label;},1800);},"quiet");
+    const node=W.action(label,async()=>{
+      const value=typeof text==="function"?text():text;
+      try{if(navigator.clipboard){await navigator.clipboard.writeText(value);node.textContent="已复制";setTimeout(()=>{node.textContent=label;},1800);return;}}catch{}
+      const modal=W.dialog("复制内容",node),content=el("textarea",{rows:8,readonly:""},value);
+      modal.body.append(field("待复制内容",content),el("p",{class:"small muted"},"自动复制不可用，请使用键盘或长按复制。"));content.focus();content.select();
+    },"quiet");
     return node;
   };
   let dialogID=0;
-  W.dialog = title => {
-    const previous=document.activeElement,id="wb-dialog-title-"+(++dialogID);
+  W.dialog = (title,previous=document.activeElement) => {
+    const id="wb-dialog-title-"+(++dialogID);
     const body=el("div",{class:"dialog-body"});let busy=false;
     const close=button("关闭",()=>dialog.close(),"quiet");
     const dialog=el("dialog",{class:"wb-dialog","aria-labelledby":id},

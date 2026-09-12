@@ -56,5 +56,5 @@ func workbenchPage(path, title string) webui.Page {
 			webui.El("div", webui.Attrs{"id": "app", "class": "page-root"}, webui.El("p", nil, webui.Text("正在载入工作台…"))),
 		),
 	)
-	return webui.Page{Title: title + " · 个人工作台", Theme: "sand", Scripts: []string{"/assets/workbench.js", "/assets/ai-pages.js", "/assets/resources.js"}, Body: body}
+	return webui.Page{Title: title + " · 个人工作台", Theme: "sand", Styles: []string{"/assets/workbench.css"}, Scripts: []string{"/assets/workbench.js", "/assets/ai-pages.js", "/assets/resources.js"}, Body: body}
 }

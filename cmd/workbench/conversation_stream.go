@@ -46,6 +46,7 @@ func reduceConversationStream(kind, operation string, value any) any {
 	blocks := map[int]map[string]any{}
 	fragments := map[int]string{}
 	choices := map[int]map[string]any{}
+	chatToolCalls := map[int]map[int]map[string]any{}
 	parts := []any{}
 	var responseText strings.Builder
 	index := func(v any) int {
@@ -138,6 +139,27 @@ func reduceConversationStream(kind, operation string, value any) any {
 							message[key] = before + text
 						}
 					}
+					if list, ok := delta["tool_calls"].([]any); ok {
+						if chatToolCalls[i] == nil {
+							chatToolCalls[i] = map[int]map[string]any{}
+						}
+						for _, rawCall := range list {
+							call, _ := rawCall.(map[string]any)
+							callIndex := index(call["index"])
+							if chatToolCalls[i][callIndex] == nil {
+								chatToolCalls[i][callIndex] = map[string]any{}
+							}
+							mergeChatCallDelta(chatToolCalls[i][callIndex], call)
+						}
+					}
+					if call, ok := delta["function_call"].(map[string]any); ok {
+						current, _ := message["function_call"].(map[string]any)
+						if current == nil {
+							current = map[string]any{}
+							message["function_call"] = current
+						}
+						mergeChatCallDelta(current, call)
+					}
 					if reason := choice["finish_reason"]; reason != nil {
 						choices[i]["finish_reason"] = reason
 					}
@@ -181,6 +203,18 @@ func reduceConversationStream(kind, operation string, value any) any {
 		sort.Ints(ids)
 		list := []any{}
 		for _, i := range ids {
+			if calls := chatToolCalls[i]; len(calls) > 0 {
+				callIDs := make([]int, 0, len(calls))
+				for callID := range calls {
+					callIDs = append(callIDs, callID)
+				}
+				sort.Ints(callIDs)
+				ordered := make([]any, 0, len(callIDs))
+				for _, callID := range callIDs {
+					ordered = append(ordered, calls[callID])
+				}
+				choices[i]["message"].(map[string]any)["tool_calls"] = ordered
+			}
 			list = append(list, choices[i])
 		}
 		out["choices"] = list
@@ -191,6 +225,29 @@ func reduceConversationStream(kind, operation string, value any) any {
 	}
 	_ = kind
 	return out
+}
+
+func mergeChatCallDelta(destination, delta map[string]any) {
+	for key, value := range delta {
+		if key == "index" {
+			continue
+		}
+		if nested, ok := value.(map[string]any); ok {
+			current, _ := destination[key].(map[string]any)
+			if current == nil {
+				current = map[string]any{}
+				destination[key] = current
+			}
+			mergeChatCallDelta(current, nested)
+			continue
+		}
+		if fragment, ok := value.(string); ok && key != "id" && key != "type" {
+			before, _ := destination[key].(string)
+			destination[key] = before + fragment
+			continue
+		}
+		destination[key] = value
+	}
 }
 
 func validateConversationOperation(kind, operation string) error {

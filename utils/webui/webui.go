@@ -46,6 +46,8 @@ type Page struct {
 	AssetPrefix string
 	// Theme 是初始配色：rose（默认）、sand、sage 或 dusk。
 	Theme string
+	// Styles 是应用自己的本地绝对样式路径，在内置主题后按顺序加载。
+	Styles []string
 	// Scripts 是应用自己的本地绝对脚本路径，按顺序在内置 JS 后 defer 加载。
 	Scripts []string
 	Body    Node
@@ -78,6 +80,12 @@ func Render(w io.Writer, p Page) error {
 	b.source.WriteString(`<link rel="stylesheet" data-webui-theme-sheet="` + b.value(theme) + `" href="` + b.value(prefix+"/themes/"+theme+".css") + `"><script defer src="` + b.value(prefix+"/theme.js") + `"></script>`)
 	b.source.WriteString(`<script defer src="` + b.value(prefix+"/video.js") + `"></script>`)
 	b.source.WriteString(`<script defer src="` + b.value(prefix+"/chart.js") + `"></script>`)
+	for _, href := range p.Styles {
+		if !localPath(href) {
+			return fmt.Errorf("webui: invalid stylesheet path %q", href)
+		}
+		b.source.WriteString(`<link rel="stylesheet" href="` + b.value(href) + `">`)
+	}
 	for _, src := range p.Scripts {
 		if !localPath(src) {
 			return fmt.Errorf("webui: invalid script path %q", src)

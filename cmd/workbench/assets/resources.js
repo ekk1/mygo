@@ -99,11 +99,11 @@
     const output=el("div",{});let busy=false;
     const form=el("form",{class:"stack"},field("原生 batch_requests 数组",text),el("div",{class:"actions"},el("button",{type:"submit"},"添加请求"),button("预览请求",()=>send(true))),output);
     async function send(preview){
-      if(busy)return;busy=true;const unlock=W.lock(form);modal.setBusy(true);
+      if(busy)return;const trigger=document.activeElement;busy=true;const unlock=W.lock(form);modal.setBusy(true);
       try{
         const requests=JSON.parse(text.value);if(!Array.isArray(requests)||!requests.length)throw new Error("请填写非空请求数组");
         const body={batch_id:idOf(row),batch_requests:requests},result=await W.native("batches.requests",body,{},preview);
-        if(preview)output.replaceChildren(W.preview(result));else{modal.close();status.replaceChildren(W.notice("请求已添加，点击「刷新」更新列表。"));}
+        if(preview){output.replaceChildren();W.showPreview(result,trigger);}else{modal.close();status.replaceChildren(W.notice("请求已添加，点击「刷新」更新列表。"));}
       }catch(error){output.replaceChildren(W.notice(error.message,true));}
       finally{busy=false;unlock();modal.setBusy(false);}
     }
@@ -140,13 +140,13 @@
    const form=el("form",{class:"stack","data-resource-editor":""},fields,el("details",{},el("summary",{},"原生扩展参数"),field("额外 JSON 字段",extra)),el("div",{class:"actions"},submit,preview),out);
    let busy=false;
    async function perform(isPreview){
-     if(busy||!W.validate(form))return;busy=true;const unlock=W.lock(form);modal.setBusy(true);
+     if(busy||!W.validate(form))return;const trigger=document.activeElement;busy=true;const unlock=W.lock(form);modal.setBusy(true);
      try{
        const req=build(),extras=JSON.parse(extra.value||"{}");
        if(!extras||Array.isArray(extras)||typeof extras!=="object")throw new Error("扩展参数必须是 JSON 对象");
        for(const [key,value]of Object.entries(extras)){if(Object.hasOwn(req.params,key))throw new Error(`重复字段 ${key}`);req.params[key]=value;}
        const data=await W.native(req.operation,req.params,req.uploads,isPreview);
-       if(isPreview)out.replaceChildren(W.preview(data));
+       if(isPreview){out.replaceChildren();W.showPreview(data,trigger);}
        else{modal.close();status.replaceChildren(W.notice("操作已完成，点击「刷新」更新列表。"));}
      }catch(error){out.replaceChildren(W.notice(error.message,true));}
      finally{busy=false;unlock();modal.setBusy(false);}

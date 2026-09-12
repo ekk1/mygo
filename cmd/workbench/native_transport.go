@@ -15,7 +15,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -498,17 +497,8 @@ func (a *app) sendGeminiFile(ctx context.Context, p provider, operation string, 
 	if err != nil {
 		return nil, err
 	}
-	startReq.Header = spec.headers.Clone()
-	startReq.Header.Set("Content-Type", "application/json")
-	startReq.Header.Set("X-Goog-Upload-Protocol", "resumable")
-	startReq.Header.Set("X-Goog-Upload-Command", "start")
-	startReq.Header.Set("X-Goog-Upload-Header-Content-Length", strconv.FormatInt(size, 10))
+	startReq.Header = nativeGeminiStageHeaders(spec, false)
 	startReq.ContentLength = int64(len(spec.jsonBody))
-	contentType := upload.ContentType
-	if contentType == "" {
-		contentType = "application/octet-stream"
-	}
-	startReq.Header.Set("X-Goog-Upload-Header-Content-Type", contentType)
 	startResponse, startBody, stageErr := runNativeStage(client, logEntry, startReq, metadataPath)
 	if stageErr != nil {
 		return nil, stageErr
@@ -549,10 +539,7 @@ func (a *app) sendGeminiFile(ctx context.Context, p provider, operation string, 
 	if err != nil {
 		return nil, err
 	}
-	uploadReq.Header = spec.headers.Clone()
-	uploadReq.Header.Set("Content-Type", contentType)
-	uploadReq.Header.Set("X-Goog-Upload-Offset", "0")
-	uploadReq.Header.Set("X-Goog-Upload-Command", "upload, finalize")
+	uploadReq.Header = nativeGeminiStageHeaders(spec, true)
 	uploadReq.ContentLength = size
 	finalResponse, finalBody, stageErr := runNativeStage(client, logEntry, uploadReq, uploadPath)
 	if stageErr != nil {

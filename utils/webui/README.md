@@ -16,6 +16,7 @@ type Page struct {
     Lang        string
     AssetPrefix string
     Theme       string
+    Styles      []string
     Scripts     []string
     Body        Node
 }
@@ -29,13 +30,14 @@ func Assets() http.Handler
 - `Page.Title` 是浏览器标题；`Lang` 默认 `zh-CN`；`AssetPrefix` 默认 `/webui`，可改为 `/assets/ui`，允许末尾 `/`，也可为 `/`。前缀必须是规范的本地绝对 URL 路径，不能有查询、片段、百分号、反斜线、空白或 `..` 段。资源由 `Assets` 单独挂载，`Render` 不注册路由。
 - `Page.Theme` 指定初始配色：`rose`（默认，玫瑰灰）、`sand`（燕麦）、`sage`（鼠尾草）、`dusk`（暮色）。无效名称使 `Render` 返回错误且不写页面。浏览器已保存的有效选择优先于此初始值。前三套随系统切换明暗，暮色固定为深色。
 - `Page.Scripts` 可填 `[]string{"/app.js"}`，在内置 JS 后按顺序 defer 加载应用脚本；路径遵守相同的本地路径规则，由应用另外注册资源路由。默认不加载应用脚本，不支持内联 JS。
+- `Page.Styles` 可填 `[]string{"/app.css"}`，在 HTML head 中、内置主题之后按顺序加载应用样式，避免等 JS 执行后才应用布局。路径遵守相同的本地路径规则，由应用注册资源路由；默认不加载应用样式。
 - `Render` 输出完整 HTML5 文档，自动加入 charset、viewport、本地 CSS 和 defer JS。先完整渲染再写入；非法标签、属性或模板错误返回 error，不写半截页面。writer 写入错误直接返回，可能已经写入部分字节。调用方设置 HTTP 状态和 `Content-Type: text/html; charset=utf-8`；需在写响应头前处理渲染错误时可先渲染到 `bytes.Buffer`。
 - `RenderFragment` 只输出传入节点，不添加文档外壳、CSS 或 JS；转义、校验和错误行为同 `Render`。例如 `webui.RenderFragment(&buf, chart)` 可返回图表片段，由应用 JS 插入已加载资源的页面。
 - `El` 支持常用语义化 HTML、表单、表格、媒体和 `details/dialog` 等，不支持自定义标签、SVG 或 `script/style/iframe/object/embed`，也不允许 `html/head/body` 等文档外壳标签。SVG 仅由下文的 `CandlestickChart` 在包内安全生成。名字不合法、内联 `on*`、`style`、`srcdoc` 属性及 void 元素的子节点会在渲染时返回错误。布局合法性（例如 `ul` 的子元素应该是 `li`）仍由调用方保证。
 - 动态文本、属性和 URL 按上下文转义，不提供 Raw HTML。危险 URL 输出 `#ZgotmplZ`，不会返回 error。标签/属性名由应用代码决定；转义不代替业务校验、认证、CSRF 或授权。除下文的配色属性和视频组件属性外，`data-*` 不自动触发脚本。
 - `Assets` 提供 `webui.css`、`webui.js`、`theme.js`、`video.js`、`chart.js` 和 `themes/{rose,sand,sage,dusk}.css`，支持 GET/HEAD 和 Range 请求；其他路径 404，其他方法 405。内置 JS 由 `Render` 自动 defer 加载。资源随程序打包，无外部服务或运行时磁盘依赖，使用 `Cache-Control: no-cache`。
 - `Text` 在 `textarea` / `pre` 中的开头换行会保留；浏览器仍按 HTML 规则处理其他换行和空白。
-- `Node` 构造后不可变，可并发复用；`Render` 和 `RenderFragment` 可并发写入各自的 writer。构造时不要并发修改输入 map/slice，渲染时不要并发修改 `Page` 或其 `Scripts`。`Assets` Handler 可并发使用。
+- `Node` 构造后不可变，可并发复用；`Render` 和 `RenderFragment` 可并发写入各自的 writer。构造时不要并发修改输入 map/slice，渲染时不要并发修改 `Page` 或其 `Scripts` / `Styles`。`Assets` Handler 可并发使用。
 
 ## 最小示例
 

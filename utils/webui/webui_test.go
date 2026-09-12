@@ -150,6 +150,24 @@ func TestLocalScripts(t *testing.T) {
 	}
 }
 
+func TestLocalStyles(t *testing.T) {
+	var b bytes.Buffer
+	if err := Render(&b, Page{Styles: []string{"/app.css", "/extra.css"}, Scripts: []string{"/app.js"}}); err != nil {
+		t.Fatal(err)
+	}
+	output := b.String()
+	base, app, extra, script := strings.Index(output, "/webui/themes/rose.css"), strings.Index(output, `rel="stylesheet" href="/app.css"`), strings.Index(output, `rel="stylesheet" href="/extra.css"`), strings.Index(output, `defer src="/app.js"`)
+	if base < 0 || app < base || extra < app || script < extra || extra > strings.Index(output, "</head>") {
+		t.Fatal(output)
+	}
+	for _, href := range []string{"https://evil.test/a.css", "//evil/a.css", "/../a.css", `/a" onload="bad`} {
+		b.Reset()
+		if err := Render(&b, Page{Styles: []string{href}}); err == nil || b.Len() != 0 {
+			t.Fatalf("invalid stylesheet accepted: %q", href)
+		}
+	}
+}
+
 func TestAssets(t *testing.T) {
 	h := http.StripPrefix("/ui/", Assets())
 	for _, tc := range []struct {

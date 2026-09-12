@@ -113,17 +113,34 @@ test("workspace navigation and profile settings are independent", async()=>{
  }finally{await page.close();}
 });
 
+test("the initial shell keeps its layout while application scripts load",async()=>{
+ const page=await browser.newPage();let release;
+ const gate=new Promise(resolve=>{release=resolve;});
+ try{
+  await page.route("**/assets/workbench.js",async route=>{await gate;await route.continue();});
+  await page.goto(base+"/ai/openai/alpha/chat",{waitUntil:"commit"});
+  await page.locator(".app-shell").waitFor();
+  await page.waitForFunction(()=>getComputedStyle(document.querySelector(".app-shell")).display==="grid",{},{timeout:1500});
+  assert.ok((await page.locator(".sidebar").boundingBox()).width<300,"loading must not flash a full-width sidebar");
+ }finally{release();await page.close();}
+});
+
 test("preview is side-effect free, folds long input, and sends exact original body",async()=>{
  const page=await browser.newPage();try{
+  await page.context().grantPermissions(["clipboard-read","clipboard-write"]);
   await page.goto(base+"/ai/openai/alpha/chat");await page.getByLabel("实际模型",{exact:true}).fill("fake-chat-model");await page.locator(".parameters > summary").click();await page.getByLabel("Service tier",{exact:true}).fill("flex");await page.getByLabel("Temperature",{exact:true}).fill("0");
   const message="长消息"+"abcdefghij".repeat(600);await page.getByLabel("消息",{exact:true}).fill(message);
   const before=calls.length;const beforeSessions=await (await fetch(base+"/api/sessions?profile_id=alpha")).json();
-  await page.getByRole("button",{name:"预览请求",exact:true}).click();await page.locator("[data-request-preview]").waitFor();assert.equal(calls.length,before,"preview must not send upstream");assert.match(await page.locator("[data-request-preview]").textContent(),/省略/);
+  await page.getByRole("button",{name:"预览请求",exact:true}).click();const modal=page.getByRole("dialog",{name:"请求预览",exact:true});await modal.locator("[data-request-preview]").waitFor();assert.equal(calls.length,before,"preview must not send upstream");assert.match(await modal.locator("[data-request-preview]").textContent(),/省略/);
   const afterSessions=await (await fetch(base+"/api/sessions?profile_id=alpha")).json();assert.equal(afterSessions.length,beforeSessions.length,"preview must not create a session");
   await page.getByRole("button",{name:"展开完整内容"}).click();const preview=JSON.parse(await page.locator("[data-request-preview]").textContent());assert.equal(preview.body.input[0].content[0].text,message);assert.equal(preview.body.service_tier,"flex");assert.equal(preview.body.temperature,0);
+  await modal.getByRole("button",{name:"复制 curl",exact:true}).click();const curl=await page.evaluate(()=>navigator.clipboard.readText());assert.ok(curl.includes(message),"curl must retain the full input");assert.match(curl,/\$\{API_KEY(?::[^}]*)?\}/);assert.equal(curl.includes("alpha-secret"),false);
+  await page.screenshot({path:path.join(repo,"bin/workbench-browser","request-preview-modal.png"),fullPage:true});
+  const viewport=page.viewportSize();await page.setViewportSize({width:390,height:844});const bounds=await modal.boundingBox();assert.ok(bounds.x>=0&&bounds.x+bounds.width<=390,"the preview dialog must fit mobile width");await page.screenshot({path:path.join(repo,"bin/workbench-browser","request-preview-mobile.png"),fullPage:false});await page.setViewportSize(viewport);
+  await page.keyboard.press("Escape");await modal.waitFor({state:"detached"});assert.equal(await page.getByRole("button",{name:"预览请求",exact:true}).evaluate(node=>node===document.activeElement),true);
   await page.getByRole("button",{name:"发送",exact:true}).click();await page.locator(".message.assistant").last().waitFor();await page.waitForFunction(()=>!document.querySelector(".composer button[type=submit]").disabled);assert.deepEqual(calls.findLast(c=>c.url==="/v1/responses").body,preview.body);assert.equal(await page.locator(".message-text b").count(),0);
   await page.getByLabel("消息",{exact:true}).fill("第二条");await page.getByRole("button",{name:"预览请求",exact:true}).click();await page.locator("[data-request-preview]").waitFor();assert.match(await page.locator("[data-request-preview]").textContent(),/output_text/);
-  await page.getByLabel("消息",{exact:true}).fill("修改后");await page.getByText("输入或参数已变化，请重新预览。").waitFor();
+  await page.keyboard.press("Escape");await page.getByLabel("消息",{exact:true}).fill("修改后");await page.getByRole("button",{name:"预览请求",exact:true}).click();await page.locator("[data-request-preview]").waitFor();assert.equal(JSON.parse(await page.locator("[data-request-preview]").textContent()).body.input.at(-1).content[0].text,"修改后");await page.keyboard.press("Escape");
   await page.getByLabel("当前 profile").selectOption("beta");await page.waitForURL("**/beta/chat");await page.getByRole("button",{name:"新建会话",exact:true}).waitFor();assert.equal(await page.locator(".session-item").count(),0,"sessions must be isolated");assert.equal(await page.getByLabel("消息",{exact:true}).inputValue(),"");
  }finally{await page.close();}
 });
@@ -136,12 +153,27 @@ test("provider pages use their own native protocol and retain service tier",asyn
  const gemini=calls.findLast(c=>/:(streamGenerateContent|generateContent)/.test(c.url));assert.equal(gemini.headers["x-goog-api-key"],"gemini-secret");assert.equal(gemini.body.contents[0].parts[0].text,"hello gemini");assert.equal(gemini.body.model,undefined);
 });
 
+test("clipboard denial leaves the full curl available for manual copying",async()=>{
+ const page=await browser.newPage();try{
+  await page.goto(base+"/ai/openai/alpha/chat");await page.getByLabel("消息",{exact:true}).fill("手动复制也必须完整");
+  await page.evaluate(()=>Object.defineProperty(navigator,"clipboard",{value:{writeText:async()=>{throw new DOMException("clipboard denied","NotAllowedError");}},configurable:true}));
+  await page.getByRole("button",{name:"预览请求",exact:true}).click();const preview=page.getByRole("dialog",{name:"请求预览",exact:true});
+  await preview.getByRole("button",{name:"复制 curl",exact:true}).click();const manual=page.getByRole("dialog",{name:"复制内容",exact:true});
+  assert.match(await manual.getByLabel("待复制内容",{exact:true}).inputValue(),/手动复制也必须完整/);
+  await page.keyboard.press("Escape");await manual.waitFor({state:"detached"});
+  assert.equal(await preview.getByRole("button",{name:"复制 curl",exact:true}).evaluate(node=>node===document.activeElement),true);
+ }finally{await page.close();}
+});
+
 test("file manager lists, previews upload, uploads, downloads, and deletes rows",async()=>{
  const page=await browser.newPage();try{
   await page.goto(base+"/ai/openai/alpha/files");await page.getByRole("table").waitFor();await page.getByRole("button",{name:"上传文件",exact:true}).click();
   const form=page.locator("[data-resource-editor]");await form.getByLabel("文件",{exact:true}).setInputFiles({name:"sample.txt",mimeType:"text/plain",buffer:Buffer.from("browser-upload-content")});
-  const before=calls.length;await form.getByRole("button",{name:"预览请求",exact:true}).click();await form.locator("[data-request-preview]").waitFor();assert.equal(calls.length,before);assert.match(await form.locator("[data-request-preview]").textContent(),/sample.txt/);
+  await form.locator("details > summary").click();await form.getByLabel("额外 JSON 字段",{exact:true}).fill("[]");await form.getByRole("button",{name:"预览请求",exact:true}).click();await form.getByRole("alert").waitFor();
+  await form.getByLabel("额外 JSON 字段",{exact:true}).fill("{}");await form.getByText("输入已变化，请重新预览。",{exact:true}).waitFor();
+  const before=calls.length;await form.getByRole("button",{name:"预览请求",exact:true}).click();const preview=page.getByRole("dialog",{name:"请求预览",exact:true});await preview.locator("[data-request-preview]").waitFor();assert.equal(calls.length,before);assert.match(await preview.locator("[data-request-preview]").textContent(),/sample.txt/);await page.keyboard.press("Escape");await preview.waitFor({state:"detached"});assert.equal(await form.getByRole("button",{name:"预览请求",exact:true}).evaluate(node=>node===document.activeElement),true);
   const fileLists=()=>calls.filter(call=>call.method==="GET"&&new URL(call.url,"http://test").pathname==="/v1/files").length;
+  assert.equal(await form.locator(".notice").count(),0,"a successful preview clears the previous error and stale-input notice");
   const beforeUpload=fileLists();await form.getByRole("button",{name:"提交",exact:true}).click();await form.waitFor({state:"detached"});assert.equal(fileLists(),beforeUpload,"upload must not reload the list");
   await page.getByRole("button",{name:"刷新",exact:true}).click();const row=page.locator('[data-resource-id="file_browser"]');await row.waitFor();assert.match(await row.textContent(),/sample.txt/);
   await page.getByRole("button",{name:"下一页",exact:true}).click();await page.getByText("这里还没有资源。",{exact:true}).waitFor();await page.getByRole("button",{name:"上一页",exact:true}).click();await row.waitFor();
@@ -158,6 +190,15 @@ test("multimodal routes show dedicated forms and render generated media",async()
   await page.goto(base+"/ai/openai/alpha/image");await page.getByRole("heading",{name:"图片生成",exact:true}).waitFor();await page.getByLabel("提示词 / 输入",{exact:true}).fill("a dot");await page.getByRole("button",{name:"生成图片",exact:true}).click();await page.locator(".results img").waitFor();assert.ok(await page.locator(".results img").evaluate(img=>img.complete));
   await page.goto(base+"/ai/openai/alpha/speech");await page.getByRole("heading",{name:"语音合成",exact:true}).waitFor();await page.getByLabel("要朗读的文本",{exact:true}).fill("你好");await page.getByRole("button",{name:"合成语音",exact:true}).click();await page.locator(".results audio").waitFor();
   for(const route of ["image-edit","transcribe","translate"]){await page.goto(base+"/ai/openai/alpha/"+route);await page.locator(".workspace-form").waitFor();assert.equal(await page.locator('input[type="file"]').first().isVisible(),true);}
+ }finally{await page.close();}
+});
+
+test("Gemini thought parts remain in native results without becoming answer text",async()=>{
+ const page=await browser.newPage();try{
+  await page.route("**/api/native/gemini/content.generate?*",route=>route.fulfill({json:{candidates:[{content:{role:"model",parts:[{text:"thought-only-output",thought:true,thoughtSignature:"signed-part"},{inlineData:{mimeType:"image/png",data:"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aV1sAAAAASUVORK5CYII="}}]}}]}}));
+  await page.goto(base+"/ai/gemini/gemini/image");await page.getByLabel("提示词 / 输入",{exact:true}).fill("生成图片");await page.getByRole("button",{name:"生成图片",exact:true}).click();await page.locator(".results img").waitFor();
+  assert.equal(await page.locator(".results .message-text").count(),0,"thought-only text must not become the visible answer or copy target");
+  await page.locator(".results .native-details > summary").click();assert.match(await page.locator(".results .native-details pre").textContent(),/thought-only-output/);
  }finally{await page.close();}
 });
 
@@ -203,6 +244,7 @@ test("discovery refreshes only on demand and cached selection updates the actual
   await page.getByRole("button",{name:"预览请求",exact:true}).click();
   await page.locator("[data-request-preview]").waitFor();
   assert.match(await page.locator("[data-request-preview]").textContent(),/discovered-model/);
+  await page.keyboard.press("Escape");await page.getByRole("dialog",{name:"请求预览",exact:true}).waitFor({state:"detached"});
   for(const reload of [false,true]){
    if(reload)await page.reload();
    await page.getByRole("button",{name:"发现模型",exact:true}).click();
@@ -341,6 +383,39 @@ test("restored multi-turn history keeps every message body visible",async()=>{
    assert.equal(await page.locator('[data-message-id="history-1"] .native-details').getAttribute("open"),null);
    await page.locator("#messages").evaluate(node=>{node.scrollTop=0;});
    assert.ok(await page.locator('[data-message-id="history-0"] .message-text').evaluate(node=>node.getBoundingClientRect().top>=document.querySelector("#messages").getBoundingClientRect().top),"the first saved turn must be reachable");
+  }finally{await page.close();}
+ }
+});
+
+test("image conversations open cheaply and collapse into placeholders",async t=>{
+ const image="iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aV1sAAAAASUVORK5CYII=";
+ const messages=Array.from({length:16},(_,i)=>({id:"media-"+i,parent_id:i?"media-"+(i-1):"",role:i%2?"assistant":"user",status:"complete",text:i%2?"已经生成图片，可以继续修改。":"生成一张图片。",...(i%2?{output:{output:[{type:"image_generation_call",id:"image-"+i,status:"completed",result:image}],native_events:[{data:"x".repeat(500000)}]}}:{})}));
+ const session={id:"media-history",profile_id:"alpha",operation:"responses.create",title:"图片会话",head_id:messages.at(-1).id,messages};
+ for(const width of [1440,390]){
+  const page=await browser.newPage({viewport:{width,height:900}});try{
+   await page.addInitScript(()=>sessionStorage.setItem("wb-session-alpha-responses.create",JSON.stringify({id:"media-history",parent:"media-15"})));
+   await page.route("**/api/sessions/media-history",route=>route.fulfill({json:session}));
+   const start=Date.now();await page.goto(base+"/ai/openai/alpha/chat");
+   await page.waitForFunction(()=>document.querySelectorAll(".message[data-message-id]").length===16&&!document.querySelector(".composer button[type=submit]").disabled);
+   const rawBytes=await page.locator(".native-details pre").evaluateAll(nodes=>nodes.reduce((sum,node)=>sum+node.textContent.length,0));
+   t.diagnostic(JSON.stringify({width,openMS:Date.now()-start,hiddenRawCharacters:rawBytes}));
+   assert.equal(rawBytes,0,"opening a conversation must not stringify hidden native events");
+   assert.equal(await page.locator("#messages img").count(),0,"old images must wait for explicit expansion");
+   const assistant=page.locator('[data-message-id="media-15"]'),user=page.locator('[data-message-id="media-14"]');
+   const a=await assistant.boundingBox(),u=await user.boundingBox();assert.ok(u.x>a.x,"user and model messages must be visually separated left and right");
+   await assistant.getByText("展开图片",{exact:true}).click();await assistant.locator("img").waitFor();
+   await assistant.getByRole("button",{name:"收起消息",exact:true}).click();
+   assert.equal(await assistant.locator("img").isVisible(),false,"collapsed messages must not show cropped original images");
+   assert.equal(await assistant.locator(".message-collapsed .media-placeholder").isVisible(),true);
+   assert.match(await assistant.locator(".message-collapsed").textContent(),/已经生成图片/);
+   await page.screenshot({path:path.join(repo,"bin/workbench-browser",`collapsed-media-${width}.png`),fullPage:true});
+   await assistant.getByRole("button",{name:"展开消息",exact:true}).press("Enter");
+   assert.equal(await assistant.locator("img").isVisible(),true);
+   await assistant.locator(".native-details summary").click();
+   assert.match(await assistant.locator(".native-details pre").textContent(),/image_generation_call/);
+   await user.getByRole("button",{name:"收起消息",exact:true}).click();
+   await assistant.getByRole("button",{name:"从这里继续",exact:true}).click();
+   assert.equal(await user.getByRole("button",{name:"展开消息",exact:true}).getAttribute("aria-expanded"),"false","continuation changes must retain collapse choices");
   }finally{await page.close();}
  }
 });

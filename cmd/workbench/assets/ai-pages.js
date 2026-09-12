@@ -122,7 +122,7 @@
   const mask=el("input",{type:"file",name:"mask",accept:"image/png"});
   const status=el("div",{class:"workspace-status","aria-live":"polite"});
   const result=el("section",{class:"results card","aria-live":"polite"},el("h2",{},"结果"),el("p",{class:"muted"},"完成任务后，结果会显示在这里。"));
-  const preview=el("div",{class:"preview-slot"});
+  let previewDialog=null;
   const messages=el("div",{id:"messages",class:"messages"});
   const toolNames=new Set(["search","code","image_tool","container","file_ids","mime"]);
   const group=(name,items)=>el("fieldset",{class:"parameter-group"},el("legend",{},name),el("div",{class:"parameter-grid"},items.map(item=>item.node)));
@@ -154,8 +154,9 @@
   const conversation=chat?el("section",{class:"conversation","aria-label":"当前对话"},messages,composer):null;
   const form=el("form",{class:"workspace-form "+(chat?"chat-form":"task-form"),novalidate:""},
     vendor==="xai"&&["speech","transcribe"].includes(page)?null:modelBar,
-    chat?conversation:composer,configuration,preview,chat?null:result);
+    chat?conversation:composer,configuration,chat?null:result);
   let session=null,parent="";
+  const messageViews=new WeakMap(),collapsedMessages=new Set();
   const sessionsPanel=el("aside",{class:"card session-panel"});
   const sessionStatus=el("div",{class:"small"});let sessionList=[],sessionListLoaded=false;
   const operationForChat=()=>vendor==="anthropic"?"messages.create":vendor==="gemini"?"content.generate":controls.protocol?.value==="chat"?"chat.create":"responses.create";
@@ -183,7 +184,7 @@
     values.model=values.model.trim();values.files=[...files.files];values.mask=[...mask.files];return values;
   };
   function invalidate(){
-    if(preview.childNodes.length)preview.replaceChildren(W.notice("输入或参数已变化，请重新预览。"));
+    previewDialog?.close();previewDialog=null;
     const values=collect();delete values.files;delete values.mask;
     try{sessionStorage.setItem(draftKey,JSON.stringify(values));}catch{}
   }
@@ -207,36 +208,53 @@
       messages.append(field("查看分支",choices));
     }
     for(const message of pathMessages()){
-      const content=message.output?W.result(message.output):null,native=content?.querySelector(":scope > .native-details"),resultCopy=content?.querySelector(":scope > .copy-result");
-      native?.remove();resultCopy?.remove();
-      if(message.text)content?.querySelector(":scope > .message-text")?.remove();
-      const node=el("article",{class:`message ${message.role}`,"data-message-id":message.id,"data-status":message.status},
-        el("header",{class:"message-heading"},el("strong",{},message.role==="user"?"你":"模型"),message.status!=="complete"?el("span",{class:"badge"},statuses[message.status]||message.status):null,message.id===parent?el("span",{class:"continuation-label"},"当前续接点"):null),
-        message.text?el("div",{class:"message-text"},message.text):null,
-        message.error?W.notice(message.error,true):null,
-        content);
-      const branch=button("从这里继续",()=>{if(busy)return;parent=message.id;remember();invalidate();renderMessages();prompt.focus();},"quiet");
-      const fork=W.action("复制为新会话",async()=>{
-        if(busy)return;busy=true;const unlock=W.lock(form),unlockList=W.lock(sessionsPanel);
-        try{
-          session=await W.api(`/api/sessions/${session.id}/fork`,{method:"POST",body:JSON.stringify({node_id:message.id})});
-          parent=session.head_id;remember();invalidate();renderMessages();updateSessionList();
-        }finally{busy=false;unlock();unlockList();applyProtocol();renderMessages();renderSessions();}
-      },"quiet",status);
-      branch.disabled=busy;fork.disabled=busy;
-      node.append(el("div",{class:"message-meta"},message.text?W.copyButton(message.text):resultCopy,branch,fork,native));messages.append(node);
+      let view=messageViews.get(message);
+      if(!view){
+        const content=message.output?W.result(message.output,{lazyMedia:true}):null,native=content?.querySelector(":scope > .native-details"),resultCopy=content?.querySelector(":scope > .copy-result");
+        native?.remove();resultCopy?.remove();
+        if(message.text)content?.querySelector(":scope > .message-text")?.remove();
+        const continuation=el("span",{class:"continuation-label"},"当前续接点"),key=session.id+":"+message.id;
+        const body=el("div",{class:"message-body",id:"message-body-"+message.id},
+          message.text?el("div",{class:"message-text"},message.text):null,
+          message.error?W.notice(message.error,true):null,
+          content);
+        const mediaItems=[...(content?.querySelectorAll(".media-preview")||[])];
+        const mediaLabel=[...new Set(mediaItems.map(item=>item.dataset.mediaKind))].join("、");
+        const excerpt=(message.text||content?.querySelector(".message-text")?.textContent||message.error||"原生结果").replace(/\s+/g," ").slice(0,120);
+        const collapsed=el("div",{class:"message-collapsed"},el("p",{},excerpt),mediaItems.length?W.mediaPlaceholder(`${mediaLabel} · ${mediaItems.length}`):null);
+        const fold=button("收起消息",()=>{if(collapsedMessages.has(key))collapsedMessages.delete(key);else collapsedMessages.add(key);setCollapsed();},"quiet message-toggle");
+        fold.setAttribute("aria-controls",body.id);
+        function setCollapsed(){const hidden=collapsedMessages.has(key);body.hidden=hidden;collapsed.hidden=!hidden;fold.textContent=hidden?"展开消息":"收起消息";fold.setAttribute("aria-expanded",String(!hidden));}
+        setCollapsed();
+        const node=el("article",{class:`message ${message.role}`,"data-message-id":message.id,"data-status":message.status},
+          el("header",{class:"message-heading"},el("strong",{},message.role==="user"?"你":"模型"),message.status!=="complete"?el("span",{class:"badge"},statuses[message.status]||message.status):null,continuation,fold),collapsed,body);
+        const branch=button("从这里继续",()=>{if(busy)return;parent=message.id;remember();invalidate();renderMessages();prompt.focus();},"quiet");
+        const fork=W.action("复制为新会话",async()=>{
+          if(busy)return;busy=true;const unlock=W.lock(form),unlockList=W.lock(sessionsPanel);
+          try{
+            session=await W.api(`/api/sessions/${session.id}/fork`,{method:"POST",body:JSON.stringify({node_id:message.id})});
+            parent=session.head_id;remember();invalidate();renderMessages();updateSessionList();
+          }finally{busy=false;unlock();unlockList();applyProtocol();renderMessages();renderSessions();}
+        },"quiet",status);
+        body.append(el("div",{class:"message-meta"},message.text?W.copyButton(message.text):resultCopy,branch,fork,native));
+        view={node,continuation,branch,fork,fold};messageViews.set(message,view);
+      }
+      view.continuation.hidden=message.id!==parent;
+      view.branch.disabled=busy;view.fork.disabled=busy;view.fold.disabled=busy;
+      messages.append(view.node);
     }
     messages.scrollTop=atEnd?messages.scrollHeight:scrollTop;
   }
   async function openSession(id,selectedParent){
     if(busy)return;busy=true;const unlock=W.lock(form),unlockList=W.lock(sessionsPanel);
+    let loaded=false;messages.setAttribute("aria-busy","true");status.replaceChildren(W.notice("正在载入会话…"));
     try{
-      const loaded=await W.api(`/api/sessions/${id}`);
-      if(loaded.profile_id!==profile.id||loaded.operation!==operationForChat())throw new Error("会话归属不匹配，请重新选择。");
-      session=loaded;parent=selectedParent&&loaded.messages.some(message=>message.id===selectedParent)?selectedParent:loaded.head_id;
-      remember();invalidate();renderMessages(true);
-    }catch(error){W.fail(error,status);}
-    finally{busy=false;unlock();unlockList();applyProtocol();renderMessages();}
+      const data=await W.api(`/api/sessions/${id}`);
+      if(data.profile_id!==profile.id||data.operation!==operationForChat())throw new Error("会话归属不匹配，请重新选择。");
+      session=data;parent=selectedParent&&data.messages.some(message=>message.id===selectedParent)?selectedParent:data.head_id;
+      remember();invalidate();loaded=true;status.replaceChildren();
+    }catch(error){status.replaceChildren(W.notice(error.message,true));}
+    finally{busy=false;unlock();unlockList();applyProtocol();messages.removeAttribute("aria-busy");renderMessages(loaded);}
     updateSessionList();
   }
   function renameSession(item){
@@ -284,6 +302,7 @@
   }
   async function perform(isPreview){
     if(busy||!W.validate(form))return;
+    const trigger=document.activeElement;
     const values=collect();
     if(controls.protocol?.value==="chat")for(const name of toolNames)values[name]=["search","code","image_tool"].includes(name)?false:"";
     busy=true;const unlock=W.lock(form),unlockList=W.lock(sessionsPanel);
@@ -319,13 +338,13 @@
         response=await W.api(`/api/sessions/${session?.id||"new"}/native${isPreview?"?preview=1":""}`,{method:"POST",body:JSON.stringify(payload),signal:controller.signal,onEvent});
       }else response=await W.native(request.operation,request.params,request.uploads,isPreview,controller.signal);
       status.replaceChildren();
-      if(isPreview){preview.replaceChildren(W.preview(response));preview.scrollIntoView({block:"nearest"});}
+      if(isPreview)previewDialog=W.showPreview(response,trigger);
       else if(chat){
         session=response;parent=session.head_id;remember();
         const last=session.messages.at(-1);
         if(last?.status==="complete")prompt.value="";
         else status.replaceChildren(W.notice(last?.error||"请求未完成，输入已保留。",true));
-        invalidate();preview.replaceChildren();renderMessages();updateSessionList();
+        invalidate();renderMessages();updateSessionList();
       }else{
         result.replaceChildren(el("h2",{},"结果"),W.result(response));result.removeAttribute("aria-busy");
         if(page==="video"){const id=response.request_id||response.name||response.id;if(id)videoTask(input("video_id",id));}
