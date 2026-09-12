@@ -33,6 +33,8 @@
 
 ## 本地请求约定
 
+修改型请求需要同源 Origin；无 Origin 的脚本请求应传 `X-Workbench-Request: 1`。开启工作台密码时还需 Basic Auth。以下 `background`、`asset_ids` 等字段属于工作台包装，原生参数放在 `params` 中。
+
 `POST /api/native/{vendor}/{operation}` 的 JSON 包装为 `{"provider_id":"…","params":{…},"save_response":false}`，其中 save_response 可省略。可附加 `asset_ids:{"image":["资产 ID"]}`；键为 attachment（聊天图片）、image（编辑原图）、mask（PNG 蒙版）、file（转写或云端上传）。multipart 使用同名文本字段及原生文件字段，asset_ids 是 JSON 文本。profile 必须属于 URL 中的服务商；页面携带 `revision` 查询参数，与凭据从同一个配置快照校验。
 
 `?preview=1` 返回 method、url、content_type、body、files 和 curl，不创建日志或调用上游。导出失败时保留请求预览并返回 curl_error。Gemini resumable 上传另返回两个阶段的 requests；第二阶段 URL 在实际发送时由上游启动请求返回，预览中使用占位，curl 与传输共用阶段 header 构造。
@@ -41,11 +43,11 @@ curl 的 JSON 正文通过标准输入发送；multipart 长字段写入私有�
 
 仅用于路由的 file_id、container_id、batch_id、video_id 从请求体移除；Gemini 的 model 和资源 name 按操作放入路径。分页保留各家原生字段：OpenAI after、Anthropic after_id、Gemini pageToken/pageSize、xAI pagination_token。不要在传输层统一这些字段。
 
-生成页向原生端点传 `?background=1&feature=image` 等功能名，立即以 202 返回 `{task}`。文字使用 `POST /api/sessions/{id}/native` 并传 `background:true`；非流式以 202 返回 `{task,session}`，流式首行 started 返回任务和待生成会话，event 转发事件，done 返回已保存的 task 与 session。新会话预览使用 id=new，不创建会话。旧的同步本地 API 调用方式仍可用，浏览器生成页统一使用后台模式。
+生成页向原生端点传 `?background=1&feature=image` 等功能名，接收并准备好输入后以 202 返回 `{task}`。文字使用 `POST /api/sessions/{id}/native` 并传 `background:true`；非流式以 202 返回 `{task,session}`，流式首行 started 返回任务和待生成会话，event 转发事件，done 返回已保存的 task 与 session。202 和流式帧中的 task 均为摘要，不含 result；快速任务在确认响应时可能已经完成，仍须读取任务详情或完成后的会话。新会话预览使用 id=new，不创建会话。省略后台选项的本地 API 随请求执行，浏览器生成页统一使用后台模式；此选项不代替服务商原生的后台生成参数。
 
-`GET /api/tasks` 返回不含 result 的摘要，可按 provider_id / feature 过滤；`GET /api/tasks/{id}` 返回完整结果；`POST /api/tasks/{id}/cancel` 提交取消，响应可能仍是 running，需读取最终状态；`DELETE /api/tasks/{id}` 只删除结束记录。前端只在提交当前任务时观察详情，恢复页面不重接流、不轮询列表；延迟详情响应必须核对原任务及会话仍被选中。
+`GET /api/tasks` 返回摘要，可按 provider_id / feature 过滤；`GET /api/tasks/{id}` 返回完整结果；`POST /api/tasks/{id}/cancel` 提交取消，响应可能仍是 running，需读取最终状态；`DELETE /api/tasks/{id}` 只删除结束记录。前端仅在原页面等待非流式生成时轮询详情，恢复页面读取当前记录后提供手动刷新；延迟详情响应必须核对原任务及会话仍被选中。
 
-`GET /api/assets?favorite=1` 只列精选；`POST /api/assets` 接收 multipart 文件并返回资产数组；详情和 PATCH/DELETE 使用 `/api/assets/{id}`。PATCH 接受 name / favorite，内容地址 `/api/assets/{id}/content?download=1`。`POST /api/assets/import-sessions` 返回本次导入的资产数组，只读旧内联媒体，按会话保存引用，失败回滚当前会话新增资产。
+`GET /api/assets` 列出全部资产，`?favorite=1` 只列精选；`POST /api/assets` 接收 multipart 文件并返回资产数组；详情和 PATCH/DELETE 使用 `/api/assets/{id}`，PATCH 接受 name / favorite。内容地址 `/api/assets/{id}/content` 支持 Range，允许的图片、音频和视频类型内联展示，其余作为附件下载；`?download=1` 强制下载。`POST /api/assets/import-sessions` 返回本次导入的资产数组，只读旧输出中的内联媒体，按会话保存引用，失败回滚当前会话新增资产。
 
 附件构造依据：[OpenAI 图片输入](https://developers.openai.com/api/docs/guides/images-vision)、[Anthropic Vision](https://platform.claude.com/docs/en/build-with-claude/vision)、[Gemini 图片理解](https://ai.google.dev/gemini-api/docs/image-understanding)、[xAI 图片编辑](https://docs.x.ai/developers/model-capabilities/images/editing)。资产引用单独保存，不替换会话里的原生图片、推理或签名。
 
