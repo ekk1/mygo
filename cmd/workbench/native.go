@@ -77,6 +77,14 @@ func (a *app) runNative(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	operation := r.PathValue("operation")
+	originalUploads := uploads
+	var assetCleanup func()
+	request.Params, uploads, assetCleanup, err = a.resolveAssets(vendor, operation, request.Params, uploads, request.AssetIDs)
+	defer assetCleanup()
+	if err != nil {
+		apiError(w, http.StatusBadRequest, err)
+		return
+	}
 	if r.URL.Query().Get("preview") == "1" {
 		result, previewErr := nativePreview(p, operation, request.Params, uploads)
 		if previewErr != nil {
@@ -84,6 +92,55 @@ func (a *app) runNative(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, result)
+		return
+	}
+	if _, err := buildNativeRequest(p, operation, request.Params, uploads); err != nil {
+		apiError(w, http.StatusBadRequest, err)
+		return
+	}
+	inputAssetIDs, err := a.captureUploads(p, operation, "", "", originalUploads)
+	if err != nil {
+		apiError(w, http.StatusInternalServerError, err)
+		return
+	}
+	inputAssetIDs = append(inputAssetIDs, flattenAssetIDs(request.AssetIDs)...)
+	if r.URL.Query().Get("background") == "1" {
+		copied, release, err := snapshotTaskUploads(uploads)
+		if err != nil {
+			apiError(w, http.StatusInternalServerError, err)
+			return
+		}
+		var params map[string]any
+		_ = json.Unmarshal(request.Params, &params)
+		title := stringValue(params["prompt"])
+		if title == "" {
+			title = stringValue(params["input"])
+		}
+		if title == "" {
+			title = stringValue(params["text"])
+		}
+		if title == "" && vendor == "gemini" {
+			title = nativeText(map[string]any{"content": params["contents"]})
+			if instances, ok := params["instances"].([]any); title == "" && ok && len(instances) > 0 {
+				instance, _ := instances[0].(map[string]any)
+				title = stringValue(instance["prompt"])
+			}
+		}
+		feature := r.URL.Query().Get("feature")
+		if feature == "" {
+			feature = operation
+		}
+		task, ctx, err := a.reserveTask(p, operation, feature, title, "", false)
+		if err != nil {
+			release()
+			apiError(w, http.StatusInternalServerError, err)
+			return
+		}
+		if request.SaveResponse == nil {
+			request.SaveResponse = &snapshot.SaveResponses
+		}
+		go a.runGeneration(task, ctx, nativeGeneration{provider: p, operation: operation, params: request.Params, uploads: copied, saveResponse: request.SaveResponse, cleanup: release, inputAssetIDs: inputAssetIDs})
+		a.respondTask(w, r, task, nil)
 		return
 	}
 	result, err := a.executeNative(r.Context(), p, operation, request.Params, uploads, request.SaveResponse)
@@ -96,6 +153,10 @@ func (a *app) runNative(w http.ResponseWriter, r *http.Request) {
 	}
 	if download, ok := result.(resourceDownload); ok {
 		defer os.Remove(download.Path)
+		if _, err := a.captureAssets(r.Context(), p, operation, "", "", download); err != nil {
+			apiError(w, http.StatusInternalServerError, err)
+			return
+		}
 		f, openErr := os.Open(download.Path)
 		if openErr != nil {
 			apiError(w, http.StatusInternalServerError, openErr)

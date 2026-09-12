@@ -10,9 +10,10 @@ import (
 )
 
 type resourceRequest struct {
-	ProviderID   string          `json:"provider_id"`
-	Params       json.RawMessage `json:"params"`
-	SaveResponse *bool           `json:"save_response,omitempty"`
+	ProviderID   string              `json:"provider_id"`
+	Params       json.RawMessage     `json:"params"`
+	SaveResponse *bool               `json:"save_response,omitempty"`
+	AssetIDs     map[string][]string `json:"asset_ids,omitempty"`
 }
 
 func parseResourceRequest(w http.ResponseWriter, r *http.Request) (request resourceRequest, uploads resourceUploads, cleanup func(), err error) {
@@ -36,6 +37,11 @@ func parseResourceRequest(w http.ResponseWriter, r *http.Request) (request resou
 	}
 	cleanup = func() { _ = r.MultipartForm.RemoveAll() }
 	request.ProviderID = r.FormValue("provider_id")
+	if raw := r.FormValue("asset_ids"); raw != "" {
+		if err = json.Unmarshal([]byte(raw), &request.AssetIDs); err != nil {
+			return request, nil, cleanup, fmt.Errorf("asset_ids must map fields to arrays of IDs: %w", err)
+		}
+	}
 	if raw := r.FormValue("params"); raw != "" {
 		request.Params = json.RawMessage(raw)
 		if !json.Valid(request.Params) {

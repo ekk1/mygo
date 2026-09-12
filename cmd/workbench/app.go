@@ -9,15 +9,20 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 
+	"github.com/ekk1/mygo/utils/assetstore"
 	"github.com/ekk1/mygo/utils/httpserver"
 	"github.com/ekk1/mygo/utils/webui"
 )
 
 type app struct {
 	store    *store
+	assets   *assetstore.Store
+	tasksMu  sync.RWMutex
+	tasks    map[string]*taskEntry
 	activeMu sync.Mutex
 	closing  bool
 	active   sync.WaitGroup
@@ -98,6 +103,12 @@ func newApp(dir, password string) (*app, *httpserver.Server, error) {
 		return nil, nil, err
 	}
 	a := &app{store: st}
+	if a.assets, err = assetstore.Open(filepath.Join(dir, "assets")); err != nil {
+		return nil, nil, err
+	}
+	if err = a.loadTasks(); err != nil {
+		return nil, nil, err
+	}
 	middleware := []httpserver.Middleware{a.track, protection}
 	if password == "" {
 		middleware = append(middleware, localHostOnly)
@@ -112,6 +123,16 @@ func newApp(dir, password string) (*app, *httpserver.Server, error) {
 			s.Close()
 			return nil, nil, err
 		}
+	}
+	for path, fn := range map[string]http.HandlerFunc{"GET /api/tasks": a.tasksAPI, "GET /api/tasks/{id}": a.taskAPI, "POST /api/tasks/{id}/cancel": a.taskAPI, "DELETE /api/tasks/{id}": a.taskAPI} {
+		if err = s.HandleFunc(path, fn); err != nil {
+			s.Close()
+			return nil, nil, err
+		}
+	}
+	if err = a.registerAssets(s); err != nil {
+		s.Close()
+		return nil, nil, err
 	}
 	if err = s.Handle("/webui/", http.StripPrefix("/webui/", webui.Assets())); err != nil {
 		s.Close()
@@ -247,7 +268,24 @@ func (a *app) track(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 	})
 }
-func (a *app) stopAccepting() { a.activeMu.Lock(); a.closing = true; a.activeMu.Unlock() }
+func (a *app) stopAccepting() {
+	a.activeMu.Lock()
+	a.closing = true
+	a.activeMu.Unlock()
+	a.tasksMu.RLock()
+	entries := make([]*taskEntry, 0, len(a.tasks))
+	for _, task := range a.tasks {
+		entries = append(entries, task)
+	}
+	a.tasksMu.RUnlock()
+	for _, task := range entries {
+		task.mu.Lock()
+		if taskActive(task.data.Status) && task.cancel != nil {
+			task.cancel(errTaskInterrupted)
+		}
+		task.mu.Unlock()
+	}
+}
 
 func localHostOnly(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

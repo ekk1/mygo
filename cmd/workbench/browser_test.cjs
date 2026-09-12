@@ -16,6 +16,120 @@ let temp, binary, base, workbench, browser, provider;
 let providerCalls = 0;
 let calls=[],files=[];
 const browserErrors=[];
+const samplePNG="iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aV1sAAAAASUVORK5CYII=";
+function sampleWAV(){const b=Buffer.alloc(48);b.write("RIFF",0);b.writeUInt32LE(40,4);b.write("WAVEfmt ",8);b.writeUInt32LE(16,16);b.writeUInt16LE(1,20);b.writeUInt16LE(1,22);b.writeUInt32LE(24000,24);b.writeUInt32LE(48000,28);b.writeUInt16LE(2,32);b.writeUInt16LE(16,34);b.write("data",36);b.writeUInt32LE(4,40);return b;}
+
+test("background chat survives navigation without replaying or resending the stream",async()=>{
+ const page=await browser.newPage();try{
+  await page.goto(base+"/ai/openai/beta/chat");await page.getByLabel("消息",{exact:true}).fill("stream-cancel background navigation");
+  const before=providerCalls;
+  await page.getByRole("button",{name:"发送",exact:true}).click();
+  await page.waitForFunction(()=>document.querySelector("[data-live-text]")?.textContent.includes("来自假服务"));
+  await page.reload();
+  await page.getByText("正在后台生成中",{exact:true}).waitFor({timeout:1500});
+  assert.equal(await page.locator("[data-live-text]").count(),0,"a returning page must not reattach the original stream");
+  assert.equal(await page.getByRole("button",{name:"发送",exact:true}).isDisabled(),true);
+  const active=await page.evaluate(()=>JSON.parse(sessionStorage.getItem("wb-session-beta-responses.create")));
+  let finished;
+  for(let attempt=0;attempt<150;attempt++){finished=await(await fetch(base+"/api/sessions/"+active.id)).json();if(finished.messages.at(-1).status==="complete")break;await new Promise(resolve=>setTimeout(resolve,20));}
+  assert.equal(finished.messages.at(-1).status,"complete","server must finish after the original browser disconnects");
+  await page.getByRole("button",{name:"刷新状态",exact:true}).click();
+  await page.waitForFunction(()=>!document.querySelector(".composer button[type=submit]").disabled);
+  assert.match(await page.locator(".message.assistant").last().textContent(),/安全文本/);
+  assert.equal(providerCalls,before+1,"navigation must neither cancel nor repeat generation");
+ }finally{await page.close();}
+});
+
+test("asset management curates reusable images and pickers never refresh implicitly",async()=>{
+ const page=await browser.newPage();let listReads=0;page.on("request",r=>{const u=new URL(r.url());if(r.method()==="GET"&&u.pathname==="/api/assets")listReads++;});
+ try{
+  await page.goto(base+"/library");await page.getByRole("heading",{name:"资产库",exact:true}).waitFor({timeout:1500});
+  assert.equal(listReads,0);
+  await page.getByRole("button",{name:"上传资源",exact:true}).click();
+  const upload=page.getByRole("dialog");await upload.getByLabel("本地文件",{exact:true}).setInputFiles({name:"reusable-dot.png",mimeType:"image/png",buffer:Buffer.from(samplePNG,"base64")});
+  await upload.getByRole("button",{name:"上传",exact:true}).click();await upload.waitFor({state:"detached"});
+  const row=page.locator("[data-asset-id]").filter({hasText:"reusable-dot.png"});await row.waitFor();
+  await row.getByRole("button",{name:"精选",exact:true}).click();await row.getByRole("button",{name:"取消精选",exact:true}).waitFor();assert.equal(listReads,0,"mutations update cached rows directly");
+  await page.goto(base+"/ai/openai/alpha/chat");await page.getByRole("button",{name:"选择图片",exact:true}).click();
+  const picker=page.getByRole("dialog",{name:"选择精选资产",exact:true});await picker.waitFor();assert.equal(listReads,0);
+  await picker.getByRole("button",{name:"刷新精选",exact:true}).click();await picker.getByText("reusable-dot.png",{exact:true}).waitFor();assert.equal(listReads,1);
+  await picker.getByRole("checkbox",{name:/reusable-dot/}).check();await picker.getByRole("button",{name:"使用所选",exact:true}).click();
+  await page.getByLabel("消息",{exact:true}).fill("描述这张图片");await page.getByRole("button",{name:"预览请求",exact:true}).click();
+  await page.locator("[data-request-preview]").waitFor();const preview=JSON.parse(await page.locator("[data-request-preview]").textContent());
+  assert.equal(preview.body.input[0].content.at(-1).type,"input_image");assert.equal(preview.body.input[0].content.at(-1).image_url,"data:image/png;base64,"+samplePNG);
+  await page.keyboard.press("Escape");await page.getByRole("button",{name:"选择图片",exact:true}).click();await picker.waitFor();assert.equal(listReads,1,"reopening a picker keeps its cached list");
+ }finally{await page.close();}
+});
+
+test("a delayed task refresh cannot attach itself to a newly selected conversation",async()=>{
+ const page=await browser.newPage();let release;try{
+  await page.goto(base+"/ai/openai/beta/chat");await page.getByLabel("消息",{exact:true}).fill("stream-cancel stale refresh");
+  await page.getByRole("button",{name:"发送",exact:true}).click();await page.waitForFunction(()=>document.querySelector("[data-live-text]")?.textContent.includes("来自假服务"));
+  await page.reload();await page.getByText("正在后台生成中",{exact:true}).waitFor();
+  const gate=new Promise(resolve=>{release=resolve;});let started;const waiting=new Promise(resolve=>{started=resolve;});
+  await page.route("**/api/tasks/*",async route=>{started();await gate;await route.continue();});
+  await page.getByRole("button",{name:"刷新状态",exact:true}).click();await waiting;
+  await page.getByRole("button",{name:"新建会话",exact:true}).click();
+  await page.getByLabel("消息",{exact:true}).fill("new conversation draft");
+  const response=page.waitForResponse(r=>/\/api\/tasks\/[^/]+$/.test(r.url()));release();await response;
+  await page.waitForLoadState("networkidle");
+  assert.equal(await page.getByRole("button",{name:"发送",exact:true}).isDisabled(),false,"old task status must not lock the new composer");
+  assert.equal(await page.getByRole("button",{name:"停止",exact:true}).isVisible(),false);
+  assert.equal(await page.locator(".message").count(),0);
+  assert.equal(await page.getByLabel("消息",{exact:true}).inputValue(),"new conversation draft");
+ }finally{release?.();await page.close();}
+});
+
+test("generated images survive navigation and are available in global task and asset history",async()=>{
+ const page=await browser.newPage();let taskLists=0;
+ page.on("request",r=>{if(r.method()==="GET"&&new URL(r.url()).pathname==="/api/tasks")taskLists++;});
+ try{
+  await page.goto(base+"/ai/openai/alpha/image");await page.getByLabel("提示词 / 输入",{exact:true}).fill("persistent-dot-history");
+  await page.getByRole("button",{name:"生成图片",exact:true}).click();await page.locator(".results img").waitFor();
+  const src=await page.locator(".results img").first().getAttribute("src");assert.match(src,/\/api\/assets\//);
+  await page.goto(base+"/settings");await page.goto(base+"/ai/openai/alpha/image");await page.locator(".results img").waitFor();assert.equal(await page.locator(".results img").first().getAttribute("src"),src);
+  assert.equal(taskLists,0,"restoring current task detail must not refresh history lists");
+  await page.getByRole("link",{name:"生成历史",exact:true}).click();await page.getByRole("heading",{name:"后台任务",exact:true}).waitFor();assert.equal(taskLists,0);
+  await page.getByRole("button",{name:"刷新任务",exact:true}).click();await page.getByText("persistent-dot-history",{exact:true}).waitFor();assert.equal(taskLists,1);
+  await page.goto(base+"/library");await page.getByRole("button",{name:"刷新资产",exact:true}).click();await page.locator("[data-asset-id]").first().waitFor();
+  const id=src.match(/\/api\/assets\/([^/]+)/)[1];const row=page.locator(`[data-asset-id="${id}"]`);await row.waitFor();
+  assert.equal(await row.getByRole("button",{name:"精选",exact:true}).isVisible(),true,"generated media needs explicit curation before reuse");
+ }finally{await page.close();}
+});
+
+test("a generation completed before acknowledgement still shows its saved result",async()=>{
+ const page=await browser.newPage();try{
+  await page.route("**/api/native/openai/images.generate?**",async route=>{
+   const response=await route.fetch(),ack=await response.json();let task;
+   for(let attempt=0;attempt<150;attempt++){task=await(await fetch(base+"/api/tasks/"+ack.task.id)).json();if(task.status==="complete")break;await new Promise(resolve=>setTimeout(resolve,20));}
+   assert.equal(task.status,"complete");const {result,...summary}=task;
+   await route.fulfill({response,json:{task:summary}});
+  });
+  await page.goto(base+"/ai/openai/alpha/image");await page.getByLabel("提示词 / 输入",{exact:true}).fill("fast-completed-result");
+  await page.getByRole("button",{name:"生成图片",exact:true}).click();
+  await page.locator(".results img").waitFor({timeout:2000});
+  assert.match(await page.locator(".results img").first().getAttribute("src"),/\/api\/assets\//);
+  assert.equal(await page.getByRole("button",{name:"生成图片",exact:true}).isEnabled(),true);
+ }finally{await page.close();}
+});
+
+test("global library and tasks fit all themes on desktop and mobile",async()=>{
+ for(const theme of ["sand","sage","rose","dusk"])for(const width of [1440,390]){
+  const page=await browser.newPage({viewport:{width,height:900}});try{
+   await page.addInitScript(theme=>localStorage.setItem("webui-theme",theme),theme);
+   for(const [route,title,refresh] of [["library","资产库","刷新资产"],["tasks","后台任务","刷新任务"]]){
+    await page.goto(base+"/"+route);await page.getByRole("heading",{name:title,exact:true}).waitFor();
+    await page.getByRole("button",{name:refresh,exact:true}).click();await page.waitForLoadState("networkidle");
+    assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),`${route} ${theme} ${width}: page overflow`);
+    assert.equal(await page.locator(".resource-table").count(),1);
+    if(width===390)for(const action of await page.locator(".row-actions > *").all()){
+     const box=await action.boundingBox();assert.ok(box.x>=0&&box.x+box.width<=width,`${route}: row actions should fit without horizontal scrolling`);
+    }
+    await page.screenshot({path:path.join(repo,"bin/workbench-browser",`${route}-${theme}-${width}.png`),fullPage:true});
+   }
+  }finally{await page.close();}
+ }
+});
 
 const listen = server => new Promise((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", () => resolve(server.address().port)); });
 const close = server => new Promise(resolve => server?.close(resolve));
@@ -69,7 +183,7 @@ before(async () => {
     if(request.method==="GET"&&url.pathname==="/v1/batches")return json({data:[{id:"batch-browser",status:"in_progress",input_file_id:"file-in",request_counts:{total:10,completed:3,failed:0}}],has_more:false});
     if(request.method==="POST"&&url.pathname==="/v1/batches/batch-browser/cancel")return json({id:"batch-browser",status:"cancelling"});
     if(request.method==="POST"&&url.pathname==="/v1/images/generations")return json({data:[{b64_json:"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aV1sAAAAASUVORK5CYII="}]});
-    if(request.method==="POST"&&url.pathname==="/v1/audio/speech"){response.setHeader("Content-Type","audio/mpeg");response.end("test-audio");return;}
+    if(request.method==="POST"&&url.pathname==="/v1/audio/speech"){response.setHeader("Content-Type","audio/wav");response.end(sampleWAV());return;}
     response.writeHead(404,{"Content-Type":"application/json"});response.end(JSON.stringify({error:"fake endpoint missing: "+request.method+" "+request.url}));
   });
   provider.baseURL = `http://127.0.0.1:${await listen(provider)}/v1`;
@@ -168,7 +282,10 @@ test("clipboard denial leaves the full curl available for manual copying",async(
 test("file manager lists, previews upload, uploads, downloads, and deletes rows",async()=>{
  const page=await browser.newPage();try{
   await page.goto(base+"/ai/openai/alpha/files");await page.getByRole("table").waitFor();await page.getByRole("button",{name:"上传文件",exact:true}).click();
-  const form=page.locator("[data-resource-editor]");await form.getByLabel("文件",{exact:true}).setInputFiles({name:"sample.txt",mimeType:"text/plain",buffer:Buffer.from("browser-upload-content")});
+  const form=page.locator("[data-resource-editor]");const assetForm=new FormData();assetForm.append("files",new Blob(["browser-upload-content"],{type:"text/plain"}),"sample.txt");
+  const uploaded=await(await fetch(base+"/api/assets",{method:"POST",headers:{"X-Workbench-Request":"1"},body:assetForm})).json();
+  await fetch(base+"/api/assets/"+uploaded[0].id,{method:"PATCH",headers:{"X-Workbench-Request":"1","Content-Type":"application/json"},body:JSON.stringify({favorite:true})});
+  await form.getByRole("button",{name:"选择文件",exact:true}).click();const assets=page.getByRole("dialog",{name:"选择精选资产",exact:true});await assets.getByRole("button",{name:"刷新精选",exact:true}).click();await assets.getByRole("radio",{name:/sample.txt/}).check();await assets.getByRole("button",{name:"使用所选",exact:true}).click();
   await form.locator("details > summary").click();await form.getByLabel("额外 JSON 字段",{exact:true}).fill("[]");await form.getByRole("button",{name:"预览请求",exact:true}).click();await form.getByRole("alert").waitFor();
   await form.getByLabel("额外 JSON 字段",{exact:true}).fill("{}");await form.getByText("输入已变化，请重新预览。",{exact:true}).waitFor();
   const before=calls.length;await form.getByRole("button",{name:"预览请求",exact:true}).click();const preview=page.getByRole("dialog",{name:"请求预览",exact:true});await preview.locator("[data-request-preview]").waitFor();assert.equal(calls.length,before);assert.match(await preview.locator("[data-request-preview]").textContent(),/sample.txt/);await page.keyboard.press("Escape");await preview.waitFor({state:"detached"});assert.equal(await form.getByRole("button",{name:"预览请求",exact:true}).evaluate(node=>node===document.activeElement),true);
@@ -189,7 +306,7 @@ test("multimodal routes show dedicated forms and render generated media",async()
  const page=await browser.newPage();try{
   await page.goto(base+"/ai/openai/alpha/image");await page.getByRole("heading",{name:"图片生成",exact:true}).waitFor();await page.getByLabel("提示词 / 输入",{exact:true}).fill("a dot");await page.getByRole("button",{name:"生成图片",exact:true}).click();await page.locator(".results img").waitFor();assert.ok(await page.locator(".results img").evaluate(img=>img.complete));
   await page.goto(base+"/ai/openai/alpha/speech");await page.getByRole("heading",{name:"语音合成",exact:true}).waitFor();await page.getByLabel("要朗读的文本",{exact:true}).fill("你好");await page.getByRole("button",{name:"合成语音",exact:true}).click();await page.locator(".results audio").waitFor();
-  for(const route of ["image-edit","transcribe","translate"]){await page.goto(base+"/ai/openai/alpha/"+route);await page.locator(".workspace-form").waitFor();assert.equal(await page.locator('input[type="file"]').first().isVisible(),true);}
+  for(const route of ["image-edit","transcribe","translate"]){await page.goto(base+"/ai/openai/alpha/"+route);await page.locator(".workspace-form").waitFor();assert.equal(await page.getByRole("button",{name:route==="image-edit"?"选择原始图片":"选择音频",exact:true}).isVisible(),true);}
  }finally{await page.close();}
 });
 
@@ -330,7 +447,8 @@ test("conversations restore their selected branch and lock input while forking",
   const send=async text=>{await page.getByLabel("消息",{exact:true}).fill(text);await page.getByRole("button",{name:"发送",exact:true}).click();await page.waitForFunction(()=>!document.querySelector(".composer button[type=submit]").disabled);};
   await send("first-path");await send("sibling-message");
   assert.equal(await page.locator(".session-panel").getByText("null",{exact:true}).count(),0);
-  assert.ok(await page.locator("#messages").evaluate(node=>node.scrollHeight-node.scrollTop-node.clientHeight<2),"new replies remain in view");
+  const scroll=await page.locator("#messages").evaluate(node=>({height:node.scrollHeight,top:node.scrollTop,view:node.clientHeight}));
+  assert.ok(scroll.height-scroll.top-scroll.view<2,"new replies remain in view: "+JSON.stringify(scroll));
   await page.locator(".message.assistant").first().getByRole("button",{name:"从这里继续",exact:true}).click();await send("new-branch");
   assert.equal(await page.locator(".message-text").filter({hasText:"sibling-message"}).count(),0);
   await page.goto(base+"/ai/openai/beta/image");await page.goto(base+"/ai/openai/beta/chat");

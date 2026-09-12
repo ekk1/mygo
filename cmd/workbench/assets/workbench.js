@@ -47,19 +47,20 @@
     if(options.binary && /attachment/i.test(response.headers.get("Content-Disposition")||""))return downloadResponse(response);
     if (response.headers.get("Content-Type")?.includes("application/x-ndjson")) {
       const reader=response.body.getReader(),decoder=new TextDecoder();let buffer="",completed;
-      const line=raw=>{if(!raw.trim())return;const event=JSON.parse(raw);if(event.type==="error")throw new Error(event.error);if(event.type==="done")completed=event.session;else options.onEvent?.(event);};
+      const line=raw=>{if(!raw.trim())return;const event=JSON.parse(raw);if(event.type==="error")throw new Error(event.error);if(event.type==="done")completed=event.session;options.onEvent?.(event);};
       try {for(;;){const {value,done}=await reader.read();buffer+=decoder.decode(value||new Uint8Array(),{stream:!done});let i;while((i=buffer.indexOf("\n"))>=0){line(buffer.slice(0,i));buffer=buffer.slice(i+1);}if(done)break;}if(buffer.trim())line(buffer);if(!completed)throw new Error("连接已结束，但未收到完成状态");return completed;}finally{await reader.cancel().catch(()=>{});reader.releaseLock();}
     }
     if(options.binary&&!response.headers.get("Content-Type")?.includes("json"))return downloadResponse(response);
     return response.json();
   };
-  W.native = (operation,params={},uploads={},preview=false,signal) => {
+  W.native = (operation,params={},uploads={},preview=false,signal,options={}) => {
     const context=W.requestContext;
     if (!context) throw new Error("请先选择 profile");
     let body;
-    if(Object.values(uploads).some(files=>files.length)) {body=new FormData();body.set("provider_id",context.profileID);body.set("params",JSON.stringify(params));for(const [name,files] of Object.entries(uploads))for(const file of files)body.append(name,file);}
-    else body=JSON.stringify({provider_id:context.profileID,params});
-    return W.api(`/api/native/${context.vendor}/${operation}${preview?"?preview=1&":"?"}revision=${context.revision}`,{method:"POST",body,binary:!preview,signal});
+    if(Object.values(uploads).some(files=>files.length)) {body=new FormData();body.set("provider_id",context.profileID);body.set("params",JSON.stringify(params));if(options.assets)body.set("asset_ids",JSON.stringify(options.assets));for(const [name,files] of Object.entries(uploads))for(const file of files)body.append(name,file);}
+    else body=JSON.stringify({provider_id:context.profileID,params,...(options.assets?{asset_ids:options.assets}:{})});
+    const query=new URLSearchParams({revision:context.revision});if(preview)query.set("preview","1");else if(options.background){query.set("background","1");query.set("feature",options.feature||W.feature);}
+    return W.api(`/api/native/${context.vendor}/${operation}?${query}`,{method:"POST",body,binary:!preview,signal});
   };
   const objectURLs=new Set();
   W.blobURL=blob=>{const url=URL.createObjectURL(blob);objectURLs.add(url);return url;};
@@ -71,9 +72,10 @@
     return details;
   };
   W.mediaPlaceholder=label=>el("span",{class:"media-placeholder"},el("span",{"aria-hidden":"true",class:"media-symbol"},"▧"),el("span",{},label));
-  W.result=(value,{lazyMedia=false}={})=>{
+  W.result=(value,{lazyMedia=false,skipMedia=false}={})=>{
     const box=el("div",{class:"result-content"});
     const media=(kind,render)=>{
+      if(skipMedia)return;
       if(!lazyMedia){render(box);return;}
       const label=el("span",{},"展开"+kind),details=el("details",{class:"media-preview","data-media-kind":kind},el("summary",{},W.mediaPlaceholder(label)));let rendered=false;
       details.addEventListener("toggle",()=>{label.textContent=(details.open?"收起":"展开")+kind;if(details.open&&!rendered){const content=el("div",{class:"media-content"});render(content);details.append(content);rendered=true;}});
@@ -88,10 +90,10 @@
       if(v.message?.content && typeof v.message.content==="string")texts.push(v.message.content);
       if((v.b64_json || v.type==="image_generation_call"&&v.result) && assets++<20)media("图片",target=>{const bytes=v.b64_json||v.result,format=bytes.startsWith("/9j/")?"jpeg":bytes.startsWith("UklGR")?"webp":"png",uri="data:image/"+format+";base64,"+bytes;target.append(el("img",{src:uri,alt:"生成的图片",loading:"lazy",decoding:"async"}),el("a",{href:uri,download:"image."+format},"下载图片"));});
       const inline=v.inlineData||v.inline_data;if(inline?.data && assets++<20){const mime=inline.mimeType||inline.mime_type||"application/octet-stream";media(mime.startsWith("image/")?"图片":mime.startsWith("audio/")?"音频":"附件",target=>{const raw=Uint8Array.from(atob(inline.data),c=>c.charCodeAt(0));let blob=new Blob([raw],{type:mime});if(mime.startsWith("audio/L16")||mime.startsWith("audio/pcm"))blob=W.wav(raw,Number(mime.match(/rate=(\d+)/)?.[1]||24000));const url=W.blobURL(blob);if(mime.startsWith("image/"))target.append(el("img",{src:url,alt:"生成的图片",loading:"lazy",decoding:"async"}));if(mime.startsWith("audio/"))target.append(el("audio",{src:url,controls:"",preload:"none"}));target.append(W.download(blob,mime.startsWith("audio/")?"speech.wav":"output.png"));});}
-      if(W.vendor==="gemini"&&typeof v.uri==="string") {
+      if(!skipMedia&&W.vendor==="gemini"&&typeof v.uri==="string") {
         try {const media=new URL(v.uri),base=new URL(W.profile.base_url);const match=media.pathname.match(/\/files\/([^/:]+)(?::download)?$/);if(media.origin===base.origin&&match){box.append(button("下载生成的视频",async event=>{const trigger=event.currentTarget;trigger.disabled=true;try{const data=await W.native("files.download",{file_id:"files/"+match[1],filename:"video.mp4"});box.append(W.result(data));}catch(error){W.fail(error,box);}finally{trigger.disabled=false;}}));}}catch{}
       }
-      if(typeof v.url==="string" && /^https?:\/\//.test(v.url))box.append(el("a",{href:v.url,target:"_blank",rel:"noopener noreferrer"},"打开媒体 / 下载"));
+      if(!skipMedia&&typeof v.url==="string" && /^https?:\/\//.test(v.url))box.append(el("a",{href:v.url,target:"_blank",rel:"noopener noreferrer"},"打开媒体 / 下载"));
       for(const [k,x]of Object.entries(v))if(!["inlineData","inline_data","HTTP","http","native_events"].includes(k)){if(Array.isArray(x))x.forEach(y=>visit(y,k));else if(x&&typeof x==="object")visit(x,k);}
     };visit(value);if(texts.length)box.prepend(el("div",{class:"message-text"},[...new Set(texts)].join("\n")));if(texts.length){const copy=W.copyButton([...new Set(texts)].join("\n"));copy.classList.add("copy-result");box.append(copy);}box.append(W.jsonDetails(value));return box;
   };
@@ -161,6 +163,7 @@
       nav.append(el("a",{href:`/ai/${kind}`,class:"nav-link vendor-link",...(kind===vendor?{"aria-current":"page"}:{})},el("span",{class:"vendor-mark"},v.initial),el("span",{},v.name)));
       if(kind===vendor && W.profile)nav.append(el("div",{class:"feature-nav"},W.menu().map(([id,label])=>el("a",{href:W.url(id),class:"nav-link",...(feature===id?{"aria-current":"page"}:{})},label))));
     }
+    nav.append(el("div",{class:"nav-caption"},"工作区"),...[ ["library","▧","资产库"],["tasks","◷","后台任务"] ].map(([id,mark,label])=>el("a",{href:"/"+id,class:"nav-link",...(parts[0]===id?{"aria-current":"page"}:{})},mark,el("span",{},label))));
     const header=document.querySelector("#workspace-header"),side=document.querySelector("#sidebar"),mobile=matchMedia("(max-width:760px)");
     const backdrop=el("button",{class:"nav-backdrop",type:"button","aria-label":"关闭导航",hidden:true});
     const toggle=button("☰ 导航",()=>setNavigation(!side.classList.contains("is-open")),"quiet menu-toggle");
@@ -262,8 +265,8 @@
   }
   async function boot(){try{W.config=await W.api("/api/config");if(vendor&&!vendors[vendor])throw new Error("服务商入口不存在");if(profileID){W.profile=W.config.providers.find(p=>p.id===profileID&&p.kind===vendor);if(!W.profile)throw new Error("此服务商下找不到这个 profile，请重新选择。");sessionStorage.setItem(`wb-profile-${vendor}`,profileID);}else if(vendor&&feature!=="profiles"){const list=W.config.providers.filter(p=>p.kind===vendor);if(list.length){const remembered=sessionStorage.getItem(`wb-profile-${vendor}`);location.replace(W.url("chat",list.find(p=>p.id===remembered)?.id||list[0].id));return;}}
       W.requestContext=Object.freeze({profileID:W.profile?.id,vendor,revision:W.config.revision});
-      document.title=[W.profile?W.menu().find(([id])=>id===feature)?.[1]:null,W.profile?.name,vendors[vendor]?.name||({settings:"全局设置",logs:"请求日志",ai:"AI"})[parts[0]],"个人工作台"].filter(Boolean).join(" · ");
-      renderNavigation();if(parts[0]==="settings")await settings();else if(parts[0]==="logs")await logs();else if(vendor&&(feature==="profiles"||!W.profile))profileSettings();else if(W.profile){if(!W.menu().some(([id])=>id===feature))throw new Error("当前 profile 没有启用此功能。");if(["files","containers","batches"].includes(feature))await W.resources();else await W.workspace();}else home();
+      document.title=[W.profile?W.menu().find(([id])=>id===feature)?.[1]:null,W.profile?.name,vendors[vendor]?.name||({settings:"全局设置",logs:"请求日志",ai:"AI",library:"资产库",tasks:"后台任务"})[parts[0]],"个人工作台"].filter(Boolean).join(" · ");
+      renderNavigation();if(parts[0]==="settings")await settings();else if(parts[0]==="logs")await logs();else if(parts[0]==="library")await W.library();else if(parts[0]==="tasks")await W.tasks();else if(vendor&&(feature==="profiles"||!W.profile))profileSettings();else if(W.profile){if(!W.menu().some(([id])=>id===feature))throw new Error("当前 profile 没有启用此功能。");if(["files","containers","batches"].includes(feature))await W.resources();else await W.workspace();}else home();
     }catch(error){W.root.replaceChildren(W.notice(error.message,true),el("a",{href:"/ai"},"返回 AI"));}}
   document.addEventListener("DOMContentLoaded",boot);
 })();

@@ -11,6 +11,7 @@
 | [fileutil](fileutil/README.md) | 列出、读写和筛选文件，文件系统错误统一 panic。 |
 | [strutil](strutil/README.md) | 生成随机字符串并识别常见换行符切分内容。 |
 | [kv](kv/README.md) | 并发安全的内存 KV 数据库，支持 string、hash、list 和整库 JSON 保存加载。 |
+| [assetstore](assetstore/README.md) | 并发安全地流式保存二进制资产及名称、收藏与来源元数据。 |
 | [waiter](waiter/README.md) | 按间隔检查条件，成功返回 nil，超时返回带消息的错误。 |
 | [openai](openai/README.md) | 原生调用 OpenAI 生成、图片、语音、Files、Containers 与 Batch，支持代理和逐请求日志。 |
 | [httpclient](httpclient/README.md) | 配置代理和证书，一次调用完成 JSON/Form 请求及响应解码。 |

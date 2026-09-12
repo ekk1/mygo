@@ -14,7 +14,7 @@ Go 1.24 或更高版本。整个仓库使用单个 Go module：`github.com/ekk1/
 .
 ├── cmd/
 │   ├── hello/            # 最小命令示例
-│   ├── workbench/        # 个人工作台：AI 服务商独立页面、资源与日志
+│   ├── workbench/        # 个人工作台：AI 独立页面、后台任务、资产与日志
 │   └── webui-demo/       # 页面、表单和配色示例
 ├── utils/
 │   ├── <模块>/           # 实现、测试和模块 README

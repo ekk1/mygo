@@ -117,7 +117,7 @@
    const modal=W.dialog(reference?"引用已有文件":primary.textContent);
    const fields=[];let build;
    if(cid&&reference){const file=input("file_id");file.required=true;fields.push(field("已有文件 ID",file));build=()=>({operation:"containers.files.add",params:{container_id:cid,file_id:file.value}});}
-   else if(feature==="files"||cid){const file=el("input",{type:"file",name:"file",required:true});const purpose=select("purpose",["assistants","batch","user_data","vision"],"assistants");const name=input("display_name");fields.push(field("文件",file));if(["openai","compatible","xai"].includes(vendor)&&!cid)fields.push(field("用途",purpose));if(vendor==="gemini")fields.push(field("显示名称（可选）",name));build=()=>({operation:group+".upload",params:cid?{container_id:cid}:vendor==="gemini"?{display_name:name.value}:vendor==="anthropic"?{}:{purpose:purpose.value},uploads:{file:[...file.files]}});
+   else if(feature==="files"||cid){const file=W.assetControl({label:"选择文件",multiple:false,onChange:()=>form.dispatchEvent(new Event("input",{bubbles:true}))});const purpose=select("purpose",["assistants","batch","user_data","vision"],"assistants");const name=input("display_name");fields.push(file.node);if(["openai","compatible","xai"].includes(vendor)&&!cid)fields.push(field("用途",purpose));if(vendor==="gemini")fields.push(field("显示名称（可选）",name));build=()=>{if(!file.getIDs().length)throw new Error("请从精选资产中选择文件。");return {operation:group+".upload",params:cid?{container_id:cid}:vendor==="gemini"?{display_name:name.value}:vendor==="anthropic"?{}:{purpose:purpose.value},asset_ids:{file:file.getIDs()}};};
    }else if(feature==="containers"){const name=input("name","workbench");name.required=true;const memory=select("memory_limit",["1g","4g","16g","64g"],"1g");const ids=input("file_ids");fields.push(field("名称",name),field("内存",memory),field("已有文件 ID（逗号分隔，可选）",ids));build=()=>({operation:"containers.create",params:{name:name.value,memory_limit:memory.value,...(ids.value?{file_ids:ids.value.split(",").map(x=>x.trim()).filter(Boolean)}:{})}});
    }else if(vendor==="anthropic"){const requests=el("textarea",{rows:10,required:true},'[\n  {"custom_id":"request-1","params":{"model":"","max_tokens":1024,"messages":[{"role":"user","content":"你好"}]}}\n]');fields.push(field("Message Batch 请求数组",requests));build=()=>({operation:"batches.create",params:{requests:JSON.parse(requests.value)}});
    }else if(vendor==="gemini"){const model=input("model",profile.models?.[0]||"");model.required=true;const file=input("file_name");file.required=true;const name=input("display_name","workbench");fields.push(field("实际模型",model),field("输入文件名（files/...）",file),field("显示名称",name));build=()=>({operation:"batches.create",params:{model:model.value,batch:{display_name:name.value,input_config:{file_name:file.value}}}});
@@ -145,7 +145,7 @@
        const req=build(),extras=JSON.parse(extra.value||"{}");
        if(!extras||Array.isArray(extras)||typeof extras!=="object")throw new Error("扩展参数必须是 JSON 对象");
        for(const [key,value]of Object.entries(extras)){if(Object.hasOwn(req.params,key))throw new Error(`重复字段 ${key}`);req.params[key]=value;}
-       const data=await W.native(req.operation,req.params,req.uploads,isPreview);
+       const data=await W.native(req.operation,req.params,req.uploads,isPreview,undefined,{assets:req.asset_ids});
        if(isPreview){out.replaceChildren();W.showPreview(data,trigger);}
        else{modal.close();status.replaceChildren(W.notice("操作已完成，点击「刷新」更新列表。"));}
      }catch(error){out.replaceChildren(W.notice(error.message,true));}

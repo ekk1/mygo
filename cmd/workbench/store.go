@@ -54,6 +54,8 @@ type message struct {
 	Output      json.RawMessage `json:"output,omitempty"`
 	Error       string          `json:"error,omitempty"`
 	Files       []string        `json:"files,omitempty"`
+	TaskID      string          `json:"task_id,omitempty"`
+	AssetIDs    []string        `json:"asset_ids,omitempty"`
 }
 type session struct {
 	ProfileID string    `json:"profile_id,omitempty"`
@@ -145,10 +147,21 @@ func openStore(dir string) (*store, error) {
 		if !validID.MatchString(v.ID) || e.Name() != v.ID+".json" {
 			return nil, fmt.Errorf("invalid session file %s", e.Name())
 		}
+		interrupted := false
 		for i := range v.Messages {
 			if v.Messages[i].Status == "pending" {
 				v.Messages[i].Status = "error"
+				if v.Messages[i].TaskID != "" {
+					v.Messages[i].Status = "interrupted"
+				}
 				v.Messages[i].Error = "上次生成因进程退出而中断"
+				interrupted = true
+			}
+		}
+		if interrupted {
+			v.UpdatedAt = now()
+			if err := saveKV(filepath.Join(dir, "sessions", e.Name()), v); err != nil {
+				return nil, err
 			}
 		}
 		s.sessions[v.ID] = &sessionEntry{data: v}

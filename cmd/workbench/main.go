@@ -1,4 +1,4 @@
-// workbench runs a private OpenAI workspace with local KV persistence.
+// workbench runs a private personal workspace with local KV persistence.
 package main
 
 import (

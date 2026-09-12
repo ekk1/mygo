@@ -299,15 +299,18 @@ func nativeText(value any) string {
 }
 func (a *app) sendConversation(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		ProviderID   string          `json:"provider_id"`
-		Operation    string          `json:"operation"`
-		Params       json.RawMessage `json:"params"`
-		ParentID     string          `json:"parent_id"`
-		ExpectedHead string          `json:"expected_head"`
-		Revision     int64           `json:"revision"`
-		Text         string          `json:"text"`
-		SaveResponse *bool           `json:"save_response,omitempty"`
-		Stream       bool            `json:"stream"`
+		ProviderID   string              `json:"provider_id"`
+		Operation    string              `json:"operation"`
+		Params       json.RawMessage     `json:"params"`
+		ParentID     string              `json:"parent_id"`
+		ExpectedHead string              `json:"expected_head"`
+		Revision     int64               `json:"revision"`
+		Text         string              `json:"text"`
+		SaveResponse *bool               `json:"save_response,omitempty"`
+		Stream       bool                `json:"stream"`
+		Background   bool                `json:"background"`
+		Feature      string              `json:"feature,omitempty"`
+		AssetIDs     map[string][]string `json:"asset_ids,omitempty"`
 	}
 	if err := decodeJSON(w, r, &in); err != nil {
 		apiError(w, 400, err)
@@ -332,6 +335,16 @@ func (a *app) sendConversation(w http.ResponseWriter, r *http.Request) {
 	if err := validateConversationOperation(p.Kind, in.Operation); err != nil {
 		apiError(w, 400, err)
 		return
+	}
+	resolved, _, assetCleanup, err := a.resolveAssets(p.Kind, in.Operation, in.Params, nil, in.AssetIDs)
+	defer assetCleanup()
+	if err != nil {
+		apiError(w, 400, err)
+		return
+	}
+	in.Params = resolved
+	if in.SaveResponse == nil {
+		in.SaveResponse = &cfg.SaveResponses
 	}
 	if r.PathValue("id") == "new" && r.URL.Query().Get("preview") == "1" {
 		params, err := conversationProviderRequest(p.Kind, in.Operation, in.Params, nil)
@@ -395,17 +408,36 @@ func (a *app) sendConversation(w http.ResponseWriter, r *http.Request) {
 	var raw map[string]any
 	_ = json.Unmarshal(in.Params, &raw)
 	model, _ := raw["model"].(string)
-	user := message{ID: newID(), ParentID: in.ParentID, Role: "user", Text: in.Text, Status: "complete", ProviderID: p.ID, ActualModel: model, Protocol: in.Operation, Request: in.Params, CreatedAt: now()}
+	user := message{ID: newID(), ParentID: in.ParentID, Role: "user", Text: in.Text, Status: "complete", ProviderID: p.ID, ActualModel: model, Protocol: in.Operation, Request: in.Params, CreatedAt: now(), AssetIDs: flattenAssetIDs(in.AssetIDs)}
 	assistant := message{ID: newID(), ParentID: user.ID, Role: "assistant", Status: "pending", ProviderID: p.ID, ActualModel: model, Protocol: in.Operation, CreatedAt: now()}
+	var task *taskEntry
+	var taskCtx context.Context
+	if in.Background {
+		task, taskCtx, err = a.reserveTask(p, in.Operation, "chat", in.Text, v.ID, in.Stream)
+		if err != nil {
+			e.mu.Unlock()
+			apiError(w, 500, err)
+			return
+		}
+		assistant.TaskID = task.data.ID
+	}
 	v.Messages = append(v.Messages, user, assistant)
 	v.HeadID = assistant.ID
 	if err = a.store.persistSession(e, v); err != nil {
 		e.mu.Unlock()
+		if task != nil {
+			go a.runGeneration(task, taskCtx, nativeGeneration{startupErr: err})
+		}
 		apiError(w, 500, err)
 		return
 	}
 	e.busy = true
 	e.mu.Unlock()
+	if task != nil {
+		go a.runGeneration(task, taskCtx, nativeGeneration{provider: p, operation: in.Operation, params: params, saveResponse: in.SaveResponse, stream: in.Stream, session: e, assistantID: assistant.ID, inputAssetIDs: user.AssetIDs})
+		a.respondTask(w, r, task, &v)
+		return
+	}
 	ctx := r.Context()
 	if in.Stream {
 		w.Header().Set("Content-Type", "application/x-ndjson; charset=utf-8")
@@ -417,27 +449,16 @@ func (a *app) sendConversation(w http.ResponseWriter, r *http.Request) {
 	if in.Stream {
 		result = reduceConversationStream(p.Kind, in.Operation, result)
 	}
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	defer func() { e.busy = false }()
-	v = clone(e.data)
-	last := &v.Messages[len(v.Messages)-1]
-	last.Status = "complete"
-	encoded, encodeErr := json.Marshal(result)
-	if encodeErr != nil {
-		callErr = errors.Join(callErr, fmt.Errorf("保存原生结果失败: %w", encodeErr))
-	} else {
-		last.Output = encoded
-	}
-	last.Text = nativeText(result)
+	assetIDs, assetErr := a.captureAssets(ctx, p, in.Operation, "", v.ID, result)
+	callErr = errors.Join(callErr, assetErr)
+	status := "complete"
 	if callErr != nil {
-		last.Status = "error"
+		status = "error"
 		if errors.Is(callErr, context.Canceled) {
-			last.Status = "cancelled"
+			status = "cancelled"
 		}
-		last.Error = callErr.Error()
 	}
-	if err = a.store.persistSession(e, v); err != nil {
+	if v, err = a.finishConversation(e, assistant.ID, result, assetIDs, status, callErr); err != nil {
 		if in.Stream {
 			_ = writeConversationEvent(w, map[string]any{"type": "error", "error": err.Error()})
 		} else {
@@ -458,4 +479,35 @@ func (a *app) sendConversation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, v)
+}
+
+// Keep the busy flag until the final save finishes. Failed saves are surfaced to
+// the task or request and never expose an unpersisted session in memory.
+func (a *app) finishConversation(e *sessionEntry, assistantID string, result any, assetIDs []string, status string, callErr error) (session, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	defer func() { e.busy = false }()
+	v := clone(e.data)
+	var last *message
+	for i := range v.Messages {
+		if v.Messages[i].ID == assistantID {
+			last = &v.Messages[i]
+			break
+		}
+	}
+	if last == nil {
+		return session{}, errNotFound
+	}
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		return session{}, fmt.Errorf("保存原生结果失败: %w", err)
+	}
+	last.Output, last.Text, last.Status, last.AssetIDs = encoded, nativeText(result), status, assetIDs
+	if callErr != nil {
+		last.Error = callErr.Error()
+	}
+	if err := a.store.persistSession(e, v); err != nil {
+		return session{}, err
+	}
+	return clone(e.data), nil
 }
