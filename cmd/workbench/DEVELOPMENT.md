@@ -20,7 +20,7 @@
 
 模型、资源、日志和会话列表仅由刷新、分页或重试按钮读取；进入页面、打开选择框或操作完成都不隐式重拉列表。列表使用当前标签页的 sessionStorage 缓存，通过 `W.readCache` / `W.writeCache` 容忍存储不可用；无缓存与已读取的空列表分开显示。模型和资源缓存绑定配置 revision，换 key 后不沿用旧账号目录；资源还按 profile、base URL、类型及容器隔离，分页成功后才提交数据、游标和历史，读取期间禁用行操作。会话列表只缓存摘要，保存和管理操作使用响应更新本地摘要。
 
-带 attachment 的下载先按 Blob 读取，不能按 JSON 或聊天逐行协议重新解码。文字显示当前祖先路径，流式失败保留部分输出和输入草稿。
+带 attachment 的下载先按 Blob 读取，不能按 JSON 或聊天逐行协议重新解码。
 
 对话正文默认展开，用消息按钮切换正文与摘要；折叠状态在当前页面按会话和消息 ID 记忆，不参与请求构造。`W.result(value,{lazyMedia:true})` 为聊天媒体生成占位，首次展开才解码；`W.jsonDetails` 首次展开才序列化 JSON。同一消息对象复用 DOM，避免选择续接点时重建媒体。历史容器统一滚动，消息保持内容高度，不允许收缩裁切；输入区不参与历史滚动，超长状态或错误提示单独滚动。复用结果展示时去掉重复正文，并保留媒体和复制操作。
 
@@ -30,15 +30,17 @@
 
 `POST /api/native/{vendor}/{operation}` 的 JSON 包装为 `{"provider_id":"…","params":{…},"save_response":false}`，其中 save_response 可省略。multipart 使用同名文本字段及原生文件字段。profile 必须属于 URL 中的服务商；页面携带 `revision` 查询参数，与凭据从同一个配置快照校验。
 
-`?preview=1` 返回 method、url、content_type、body、files 和 curl，不创建日志或调用上游。导出失败时保留请求预览并返回 curl_error。Gemini resumable 上传另返回两个阶段的 requests；第二阶段 URL 是上游启动请求返回的同源地址，curl 与实际传输共用阶段 header 构造。curl 测试通过本地 HTTP 服务核对真实 Bash/curl 发送的字节、文件顺序、转义、长字段与失败清理。
+`?preview=1` 返回 method、url、content_type、body、files 和 curl，不创建日志或调用上游。导出失败时保留请求预览并返回 curl_error。Gemini resumable 上传另返回两个阶段的 requests；第二阶段 URL 在实际发送时由上游启动请求返回，预览中使用占位，curl 与传输共用阶段 header 构造。
+
+curl 的 JSON 正文通过标准输入发送；multipart 长字段写入私有临时文件，退出时清理，避免命令行参数长度限制。Gemini 导出脚本核对文件大小并限制上传地址同源。本地 HTTP 测试核对真实 Bash/curl 发送的字节、文件顺序、转义和失败清理。
 
 仅用于路由的 file_id、container_id、batch_id、video_id 从请求体移除；Gemini 的 model 和资源 name 按操作放入路径。分页保留各家原生字段：OpenAI after、Anthropic after_id、Gemini pageToken/pageSize、xAI pagination_token。不要在传输层统一这些字段。
 
-文字使用 `POST /api/sessions/{id}/native`，流式响应为逐行 JSON，event 行转发上游事件，done 行返回已持久化会话。新会话预览使用 id=new；预览不创建会话。
+文字使用 `POST /api/sessions/{id}/native`。包装参数 `stream:true` 时返回逐行 JSON：event 行转发上游事件，done 行返回已持久化会话；非流式直接返回会话 JSON。新会话预览使用 id=new，不创建会话。
 
 ## 上下文回传
 
-以下为 2026-09-12 按官方文档核对的当前实现；单元测试和本地假服务覆盖请求形态与流式重组，尚未用真实账号逐项联调。
+以下规则于 2026-09-12 对照官方文档核对，适用于工作台会话层；`utils/openai` 不自动管理历史。验证范围见 [测试说明](README.md#测试)。
 
 | 协议 | 同模型、已完成消息的回传 |
 | --- | --- |
@@ -50,15 +52,17 @@
 
 OpenAI 当前文档说明 `store:false` / ZDR 的推理加密内容默认返回，因此不强行添加旧版 include。媒体 URL、文件 ID 和音频 ID 仍可能过期，本地完整保存不保证上游资源永久可用。
 
-更换模型时沿用已有产品策略：保留用户普通输入和附件、助手可见文本，过滤失去调用前项的工具结果并跳过纯结构空助手消息。中止和失败的结果不回传未闭合的工具或推理结构，只保留可见部分文本。历史折叠和预览截断都不会改变这些规则。
+更换模型时过滤旧工具结果、签名和生成图片链，跳过纯结构空助手消息。中止和失败的结果不回传未闭合的工具或推理结构，只保留可见部分文本。历史折叠和预览截断都不参与请求构造。
 
 当前没有客户端工具自动执行循环、Anthropic pause_turn 自动续跑或多 choice/candidate 分支选择；Realtime / Live 也没有页面。服务端工具由上游执行，具体模型能力、权限、beta 字段和文件/资源有效期仍由上游决定。
 
 ## 流式与传输边界
 
+生成请求使用 `r.Context()` 调用上游，生命周期跟随浏览器 HTTP 连接；前端的异步 fetch 不提供脱离页面的后台执行。当前没有通用任务队列、独立图片/语音页的任务结果存储或断线重连。文字处理结束（包括取消）后保存结果；云端视频和 Batch 的任务生命周期由上游管理。
+
 SSE 必须收到协议终态才能判定成功：Responses 的 response.completed、Chat 的 [DONE] 或 finish_reason、Anthropic 的 message_stop、Gemini 的 finishReason。读取失败、错误事件或缺少终态时保留部分事件与错误；HTTP EOF 本身不是完成信号。
 
-重建助手结果前先复制原始事件，避免修改原始记录或生成循环引用。中断时保存已收到的文字；跨模型不复用旧助手工具状态。修改这些行为时运行 conversation 与 native 测试。
+重建助手结果前先复制原始事件，避免修改原始记录或生成循环引用。修改流式或上下文行为时运行 conversation 与 native 测试。
 
 请求禁止自动跟随重定向。日志的 request_bytes 记录传输实际读取的字节数，失败拨号或中断上传不能标成完整请求。认证信息脱敏不得破坏错误的 Unwrap；原始正文日志按用户设置保留。
 

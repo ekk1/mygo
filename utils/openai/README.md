@@ -74,7 +74,7 @@ type ModelList struct {
 
 ## 最小示例
 
-以下例子中的 `model` 由调用方选择，示例 key 需要替换；不默认调用特定收费模型。
+以下示例中的 `model`、`imageModel` 和 `apiKey` 由调用方提供；音频示例中的模型与音色也需按实际能力选择。
 
 ```go
 c, err := openai.New(openai.Config{
@@ -104,9 +104,7 @@ for _, item := range res.Output {
 
 ## 核心生成：Chat Completions 与 Responses
 
-`ChatCompletionRequest` 和 `ResponseRequest` 使用 OpenAI 原生 JSON 字段；`Model` 不限制枚举，多态消息内容、结构化输出、reasoning、工具和未来原生对象使用 `any` 或 `json.RawMessage`。可选布尔和数值使用指针区分“省略”和显式 `false`/`0`；可选字符串为空时省略。四个核心请求都提供 `Extra map[string]any`；它只补充尚未出现的原生字段，与已经编码的类型字段重名时序列化失败。
-
-普通请求返回值的 `HTTP *HTTPResponse` 保存状态码、响应头和完整原始响应正文。即使 HTTP 返回非 2xx，只要收到了响应也会附上 `HTTP`，调用方可检查厂商 request ID、错误 JSON 和尚未建模的新字段。调用方不应在并发请求之间修改同一个请求或结果对象。
+`ChatCompletionRequest` 和 `ResponseRequest` 使用 OpenAI 原生 JSON 字段；`Model` 不限制枚举，多态消息内容、结构化输出、reasoning、工具和未来原生对象使用 `any` 或 `json.RawMessage`。可选布尔和数值使用指针区分“省略”和显式 `false`/`0`；可选字符串为空时省略。具体请求字段见下表，`Extra` 和错误行为遵循开头的通用约定。
 
 ### 方法
 
@@ -138,6 +136,8 @@ func (c *Client) CompactResponse(ctx context.Context, request ResponseCompactReq
 | `ResponseCompactRequest` | `Input`、`Instructions`、`PromptCacheOptions` 为原生对象；`Model`、`PreviousResponseID`、`PromptCacheKey`、`PromptCacheRetention`、`ServiceTier` 为字符串；`Extra` 补充未来字段。 |
 
 `ChatMessage` 字段为 `Role string`、`Content any`、可选 `Name string`、`Audio any`、`Annotations json.RawMessage`、`FunctionCall any`、`Refusal string`、`ToolCallID string` 和 `ToolCalls []ChatToolCall`。`Content` 可传字符串、`nil`（显式 JSON null）或原生多模态 content part 数组。`ChatToolCall` 包含 `ID`、`Type`、`Function *ChatFunctionCall`、`Custom json.RawMessage`；`ChatFunctionCall` 包含 `Name` 与 JSON 字符串 `Arguments`。
+
+`ChatMessage` 同时用于输入和输出，客户端不自动管理会话或转换历史。续聊时应按输入 schema 构造助手消息：去除输出专用 `Annotations`，`Audio` 仅保留 `id`。工作台的历史管理属于 [会话层](../../cmd/workbench/DEVELOPMENT.md#上下文回传)。
 
 Responses 常用输入可用 `ResponseInputMessage{Type, Role, Content, Status}`；`Content` 可为字符串或 `[]ResponseInputContent`。`ResponseInputContent` 提供 `Type`、`Text`、`ImageURL`、`Detail`、`FileID`、`FileURL`、`FileData`、`Filename` 和原生 `PromptCacheBreakpoint`，覆盖常用 `input_text`、`input_image`、`input_file`。其他 item 直接传原生 JSON。
 
@@ -181,39 +181,9 @@ func Function(name, description string, parameters any, strict *bool) FunctionTo
 
 工具构造函数只生成原生请求 JSON，不执行本地工具循环。
 
-### 最小示例
+### 官方参考
 
-```go
-response, err := client.CreateResponse(ctx, openai.ResponseRequest{
-    Model: "gpt-6-astra",
-    Input: "查找今天的相关新闻并概括",
-    Tools: []any{openai.WebSearch(openai.WebSearchOptions{})},
-})
-if err != nil {
-    // response.HTTP 在收到 HTTP 响应时仍可检查。
-    return err
-}
-for _, item := range response.Output {
-    for _, content := range item.Content {
-        if content.Type == "output_text" {
-            fmt.Println(content.Text)
-        }
-    }
-}
-```
-
-### 官方依据（2026-09-11 核对）
-
-- Create Chat Completion 与原生字段：https://developers.openai.com/api/reference/cli/resources/chat/subresources/completions/methods/create
-- Create/Retrieve/Delete/Cancel Responses、Input Items、Input Tokens、Compact：https://developers.openai.com/api/reference/cli/resources/responses/methods/create
-- Input Items：https://developers.openai.com/api/reference/cli/resources/responses/subresources/input_items/methods/list
-- Count Tokens：https://developers.openai.com/api/reference/cli/resources/responses/subresources/input_tokens/methods/count
-- Compact：https://developers.openai.com/api/reference/cli/resources/responses/methods/compact
-- Web Search：https://developers.openai.com/api/docs/guides/tools-web-search
-- Image Generation Tool：https://developers.openai.com/api/docs/guides/tools-image-generation
-- Code Interpreter：https://developers.openai.com/api/docs/guides/tools-code-interpreter
-- Shell（Hosted/Local）：https://developers.openai.com/api/docs/guides/tools-shell
-- 当前图片模型目录：https://developers.openai.com/api/docs/models
+原生字段见 [Chat Completions](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create) 与 [Responses](https://developers.openai.com/api/reference/resources/responses/methods/create)。工具说明见 [Web Search](https://developers.openai.com/api/docs/guides/tools-web-search)、[图片生成](https://developers.openai.com/api/docs/guides/image-generation)、[Code Interpreter](https://developers.openai.com/api/docs/guides/tools-code-interpreter) 和 [Shell](https://developers.openai.com/api/docs/guides/tools-shell)。
 
 ## 图片与非实时音频
 
@@ -368,7 +338,7 @@ func (c *Client) CreateTranslation(context.Context, TranslationRequest) (*Transc
 func (c *Client) StreamTranscription(context.Context, TranscriptionRequest, func(TranscriptionStreamEvent) error) (*HTTPResponse, error)
 ```
 
-所有媒体结果都在 `HTTP` 中保留状态码、响应头和缓冲后的原始正文。HTTP 或解码失败时仍可检查返回值及其 `HTTP`。`Extra` 用于传递未来原生字段；若与已出现的类型字段重名则返回错误。指针标量可显式传递 `false` 和 `0`。
+媒体方法的 `HTTP` 保留状态码和响应头；JSON/文本解码结果还保留原始正文，成功的二进制下载直接写入 writer，SSE 正文通过回调读取，不在 `HTTP.Body` 中累计。失败时先检查返回值是否非 nil，再读取 `HTTP`。
 
 `EditImage` 在 `ImageFiles` 和 `MaskFile` 为空时发送 JSON，此时 `Images` 和 `Mask` 可使用 Files API ID、HTTPS URL 或 base64 data URL。传入文件后改用 multipart：每个 `ImageFiles` 元素作为 `image[]`，`MaskFile` 作为 `mask`。同一请求不能混用 JSON 引用和 multipart 文件。上传必须提供文件名和 reader；`ContentType` 默认为 `application/octet-stream`。
 
@@ -382,7 +352,7 @@ func (c *Client) StreamTranscription(context.Context, TranscriptionRequest, func
 
 ```go
 result, err := client.GenerateImage(ctx, openai.ImageGenerateRequest{
-    Model:        "gpt-image-1.5",
+    Model:        imageModel,
     Prompt:       "a linocut fox reading beside a window",
     OutputFormat: "png",
     Size:         "1024x1024",
@@ -398,7 +368,7 @@ if err := os.WriteFile("fox.png", png, 0600); err != nil { return err }
 
 ```go
 edited, err := client.EditImage(ctx, openai.ImageEditRequest{
-    Model:  "gpt-image-1.5",
+    Model:  imageModel,
     Prompt: "add a small red hat",
     Images: []openai.ImageReference{{FileID: "file_abc"}},
     Mask:   &openai.ImageReference{ImageURL: "data:image/png;base64,..."},
@@ -412,7 +382,7 @@ source, err := os.Open("source.png")
 if err != nil { return err }
 defer source.Close()
 edited, err := client.EditImage(ctx, openai.ImageEditRequest{
-    Model:  "gpt-image-1.5",
+    Model:  imageModel,
     Prompt: "place the object on a wooden desk",
     ImageFiles: []openai.Upload{{
         Filename: "source.png", ContentType: "image/png", Reader: source,
@@ -424,7 +394,7 @@ edited, err := client.EditImage(ctx, openai.ImageEditRequest{
 
 ```go
 _, err := client.StreamImage(ctx, openai.ImageGenerateRequest{
-    Model: "gpt-image-1.5", Prompt: "a rainy neon street",
+    Model: imageModel, Prompt: "a rainy neon street",
     PartialImages: openai.Ptr(2),
 }, func(event openai.ImageStreamEvent) error {
     if event.Type == "image_generation.partial_image" {
@@ -509,13 +479,7 @@ _, err := client.StreamTranscription(ctx, openai.TranscriptionRequest{
 
 ## Files、Containers 与 Batch
 
-这些接口直接映射 OpenAI 原生资源 API。每个方法只发一次请求，不自动翻页、轮询、重试、创建或删除其他资源。所有解码结果都通过 `HTTP *HTTPResponse` 保留状态、响应头和原始响应体；服务端返回非 2xx 时，也会尽量同时返回可检查的结果对象与 error。
-
-2026-09-11 核对的官方 REST 文档：
-
-- https://developers.openai.com/api/reference/resources/files
-- https://developers.openai.com/api/reference/resources/containers
-- https://developers.openai.com/api/reference/resources/batches
+这些方法分别映射 [Files](https://developers.openai.com/api/reference/resources/files)、[Containers](https://developers.openai.com/api/reference/resources/containers) 和 [Batch](https://developers.openai.com/api/reference/resources/batches) 原生资源 API，每次只处理一次请求。分页、轮询和资源清理由调用方控制；返回值与错误遵循通用约定。
 
 ### Files
 

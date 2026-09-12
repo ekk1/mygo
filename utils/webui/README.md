@@ -234,34 +234,25 @@ SSE 暂不封装：实时推送可由应用使用标准 HTTP 流和原生 `Event
 
 以下命令均在仓库根目录执行。Node、Playwright 和 Chromium 仅用于测试，运行或发布 Go 应用不需要它们。
 
-测试工具从 Debian 官方仓库获取，安装须先按 [开发约定](../../AGENTS.md#工具安装与来源信任) 取得用户确认，再由用户执行：
-
-```sh
-apt-get install --no-install-recommends nodejs node-playwright chromium chromium-sandbox
-```
+优先复用已安装工具；安装、升级或更换来源统一遵循 [工具安装与来源信任](../../AGENTS.md#工具安装与来源信任)。测试命令不得隐式下载工具或浏览器。
 
 ### 1. 检查工具
 
 ```sh
 node --version
 chromium --version
-dpkg-query -W nodejs node-playwright chromium chromium-sandbox
 node -p 'require.resolve("playwright")'
 ```
 
-Playwright 应来自系统目录（Debian 通常为 `/usr/share/nodejs/playwright/index.js`）。缺少工具时先报告并取得安装确认，不运行 npm、npx、pip 或 `playwright install` 补装。
+示例浏览器测试固定使用 `/usr/bin/chromium`；Node 必须能解析已安装的 Playwright，可用 `NODE_PATH` 指定已有包目录。缺少工具时先报告，不自行运行 npm、npx、pip 或 `playwright install` 补装。工作台测试的可配置路径见 [workbench 测试说明](../../cmd/workbench/README.md#测试)。
 
 ### 2. Go 与请求测试
 
+Go 改动执行 [全仓库检查](../../AGENTS.md#完成改动前)；只定位 webui 问题时可先运行 `go test ./utils/webui ./cmd/webui-demo`。`go test` 不执行 `.cjs`，请求 JS 改动还需单独运行：
+
 ```sh
-go fmt ./...
-go test ./...
-go vet ./...
-go build -o ./bin/ ./...
 node --test utils/webui/request_test.cjs
 ```
-
-涉及共享状态或并发时再执行 `go test -race ./...`。只定位 webui 问题时可先运行 `go test ./utils/webui ./cmd/webui-demo`，提交 Go 变更前仍需完成全仓库检查。`go test` 不会自动执行 `.cjs` 测试，JS 相关改动须单独运行对应命令。
 
 ### 3. 浏览器测试
 
@@ -293,8 +284,6 @@ WEBUI_TEST_URL=http://127.0.0.1:18081 node --test utils/webui/theme_browser_test
 
 测试结束后在终端 A 按 `Ctrl+C`，只停止本次启动的服务。浏览器测试正常退出会清理自己创建的临时目录；异常残留需要核实归属后处理，不清空共享缓存。最后执行 `git diff --check`，核对文档和改动范围，报告通过项及尚未解决的失败。纯文档变更只需核对命令、链接和内容，不要求重跑上述程序测试。
 
-### 已验证版本与兼容处理
+### 测试兼容处理
 
-2026-09-10 验证：Debian Node 20.19.2、`node-playwright` 1.38.0+ds-3 和 Chromium 152.0.7977.82 的请求及浏览器测试通过。
-
-该 Playwright 包有 `rimraf` 回调/Promise 接口不匹配问题。测试入口仅在版本为 1.38.0 且 `rimraf` 为三参数函数时，通过 `util.promisify` 适配并保留同步清理方法。适配只作用于测试进程，不修改系统包；测试验证真实目录清理，错误仍会使测试失败。此处依赖 Playwright 内部接口，Debian 修复后应复核并删除。
+示例测试入口针对 Debian Playwright 1.38.0 的 `rimraf` 接口差异提供进程内适配：仅在该版本且 `rimraf` 为三参数函数时使用 `util.promisify`，保留同步清理方法，不修改系统包。测试验证真实目录清理，错误仍会使测试失败；升级该包时复核这段适配是否仍需保留。
