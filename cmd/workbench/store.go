@@ -41,6 +41,7 @@ type configuration struct {
 	SaveResponses bool       `json:"save_responses"`
 }
 type message struct {
+	Usage       *usageInfo      `json:"usage"`
 	Request     json.RawMessage `json:"request,omitempty"`
 	ID          string          `json:"id"`
 	ParentID    string          `json:"parent_id"`
@@ -58,13 +59,14 @@ type message struct {
 	AssetIDs    []string        `json:"asset_ids,omitempty"`
 }
 type session struct {
-	ProfileID string    `json:"profile_id,omitempty"`
-	Operation string    `json:"operation,omitempty"`
-	ID        string    `json:"id"`
-	Title     string    `json:"title"`
-	HeadID    string    `json:"head_id"`
-	UpdatedAt string    `json:"updated_at"`
-	Messages  []message `json:"messages"`
+	Usage     usageSummary `json:"usage"`
+	ProfileID string       `json:"profile_id,omitempty"`
+	Operation string       `json:"operation,omitempty"`
+	ID        string       `json:"id"`
+	Title     string       `json:"title"`
+	HeadID    string       `json:"head_id"`
+	UpdatedAt string       `json:"updated_at"`
+	Messages  []message    `json:"messages"`
 }
 type sessionEntry struct {
 	mu      sync.Mutex
@@ -164,6 +166,7 @@ func openStore(dir string) (*store, error) {
 				return nil, err
 			}
 		}
+		sessionUsage(&v)
 		s.sessions[v.ID] = &sessionEntry{data: v}
 	}
 	return s, nil
@@ -207,6 +210,7 @@ func (s *store) getSession(id string) (session, error) {
 
 // persistSession requires e.mu. Publish only after the independent KV save succeeds.
 func (s *store) persistSession(e *sessionEntry, v session) error {
+	sessionUsage(&v)
 	if e.deleted {
 		return errNotFound
 	}

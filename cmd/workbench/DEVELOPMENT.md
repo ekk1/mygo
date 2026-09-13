@@ -11,6 +11,8 @@
 - `native_transport.go`：HTTP、代理、日志、SSE、二进制下载及 Gemini 分阶段上传。
 - `conversation*.go`：原生历史分支、流式转发与结果持久化。
 - `config.go`、`store.go`：配置版本、凭据与会话存储。
+- `media.go` / `media_player.go`：yt-dlp 格式发现与后台下载、ffmpeg 音频抽取、资产播放器和持久播放位置；`assets/media.js` / `media.css` 提供对应页面和资产操作。
+- `usage.go`：请求用量归一化、独立账本与历史回填；`assets/usage.js` / `usage.css`：用量筛选、汇总和导出。
 - `tasks.go`：任务持久化、独立执行、原始流订阅与取消。
 - `asset*.go`：资产 API、原生附件解析、媒体捕获与旧会话导入；通用文件存储在 `utils/assetstore`。
 - `assets/library.js` / `library.css`：全局资产和任务页面、精选选择器、持久化媒体展示。
@@ -21,7 +23,7 @@
 
 异步操作使用 `W.action` 或 `W.lock` 恢复控件状态，弹窗提交期间同时设置 `setBusy`。`W.confirm` 返回 Promise，操作成功才关闭，失败留在弹窗内。不要在 await 之后读取 event.currentTarget，也不要把节点数组直接传给 replaceChildren；后者需要展开数组。
 
-模型、资源、日志、会话、资产和任务列表仅由刷新、分页或重试按钮读取；进入页面、打开选择框或操作完成都不隐式重拉列表。列表使用当前标签页的 sessionStorage 缓存，通过 `W.readCache` / `W.writeCache` 容忍存储不可用；无缓存与已读取的空列表分开显示。模型和资源缓存绑定配置 revision，换 key 后不沿用旧账号目录；资源还按 profile、base URL、类型及容器隔离，分页成功后才提交数据、游标和历史，读取期间禁用行操作。会话列表只缓存摘要，保存和管理操作使用响应更新本地摘要。
+模型、资源、日志、会话、资产、任务和用量列表仅由刷新、分页或重试按钮读取；进入页面、打开选择框或操作完成都不隐式重拉列表。列表使用当前标签页的 sessionStorage 缓存，通过 `W.readCache` / `W.writeCache` 容忍存储不可用；无缓存与已读取的空列表分开显示。模型和资源缓存绑定配置 revision，换 key 后不沿用旧账号目录；资源还按 profile、base URL、类型及容器隔离，分页成功后才提交数据、游标和历史，读取期间禁用行操作。会话列表只缓存摘要，保存和管理操作使用响应更新本地摘要。
 
 资产选择复用 `W.assetControl` / `W.pickAssets`，管理页以外不提供本地文件输入。`W.assetResults(ids,{lazyMedia:true})` 在展开前不读取缺失元信息或媒体；生成页直接展示保存的资产。原生结果通过 `W.result(value,{skipMedia:true})` 保留文字与 JSON，避免重复解码已入库的媒体。
 
@@ -82,3 +84,31 @@ SSE 必须收到协议终态才能判定成功：Responses 的 response.complete
 原生 API 请求禁止自动跟随重定向。生成媒体下载最多跟随 4 次重定向，外部地址校验后固定实际连接 IP，保留原始 Host、TLS 主机名与签名路径；配置中的 provider 同源地址允许为本地服务。日志的 request_bytes 记录传输实际读取的字节数，失败拨号或中断上传不能标成完整请求。认证信息脱敏不得破坏错误的 Unwrap；原始正文日志按用户设置保留。
 
 Anthropic Messages 引用 Files 文档源时需要 Files beta header。Gemini 用户上传文件和生成结果文件的下载能力不同。OpenAI 音频转写可能返回 text/srt/vtt，不能强制按 JSON 解码。这些协议差异由 native 测试覆盖。
+
+## 本地媒体命令
+
+`POST /api/media/formats` 接受 `{url,proxy,format}`，返回白名单媒体字段与 formats 数组，不转发远端媒体 URL、HTTP headers 或完整 yt-dlp 原始对象。格式发现同步执行，最多 2 分钟。`POST /api/media/download` 接受同一输入，`POST /api/assets/{id}/extract-audio` 接受 `{}`；后两者返回 202 `{task}`，通过现有任务详情、取消和删除 API 管理，不绑定 AI profile。
+
+命令使用 executil 的固定 Bash 程序和加引号的环境变量传参，取消终止同进程组。yt-dlp 的 after_move JSON 记录最终路径及音视频编码；只允许任务临时目录内的非空普通文件入库，元信息读取上限 16 MiB，入库上限 8 GiB。纯音频 MP4/WebM 向 assetstore 传入对应 audio MIME 提示。错误输出仅保留末尾 32 KiB，显式代理凭据脱敏；任务结果保存新资产元信息，前端只在新任务首次完成时将其加入缓存，恢复历史使用资产 ID 与当前元信息，避免旧快照覆盖精选或改名。
+
+`GET /media/player/{id}` 渲染独立播放器并复用 webui.VideoPositionControls。`GET/POST /api/assets/{id}/position` 分别读取和保存 `{seconds}`，未保存返回 JSON null，保存成功 204；仅接受有限非负秒数。位置保存在独立 KV 文件，读写与资产删除使用同一应用锁，删除后不能并发重新保存位置。媒体内容继续通过既有资产内容接口提供 Range。
+
+## Token 账本
+
+`GET /api/usage?profile_id=…&model=…&from=YYYY-MM-DD&to=YYYY-MM-DD` 返回 `{records,groups,total}`：groups 按 profile ID 与实际模型分组，summary 为 `{tokens,requests,reported,partial}`；tokens 仅含已报告的字段，未报告的整个 usage 为 null。日期按请求开始时间 UTC、两端均包含。会话的 `usage` 为 summary；助手节点的 `usage` 为 `{tokens,raw,partial}` 或 null。
+
+`usage.go` 在 executeNative 中统一记账，覆盖前台、后台及原生 LLM 调用，预览不记账。发送前先写 pending，失败则不发上游；结束后用同一个 ID 写最终用量，保存失败明确报错，不自动重发。会话请求使用 message ID，独立任务使用 task ID，其他请求使用新 ID。账本目录复用 kv，独立互斥锁保护落盘与内存发布；聚合时读取快照，不持锁渲染。
+
+重启将未完成请求标为 interrupted，随后从现存会话／任务回填，优先保留真实请求的元数据，只补缺失或从部分到完整的用量。复制会话沿用消息 ID，关联的任务不再次计数；删除来源不删账本。账本不是上游事务日志：进程在上游响应到达、结果落盘之前退出时，仅能保留未知用量，无法保证追回已计费消耗。
+
+以下口径于 2026-09-12 核对官方资料：
+
+| 协议 | 归一化规则与依据 |
+| --- | --- |
+| OpenAI / xAI Responses、Chat | 输入和输出使用 input/output 或 prompt/completion；缓存命中、推理取 details，均是子项。原生 total 优先，缺失时仅在输入输出均已知时求和。[OpenAI Chat schema](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create)、[xAI usage](https://docs.x.ai/developers/advanced-api-usage/prompt-caching/usage-and-pricing)。 |
+| Anthropic Messages | 输入 = input_tokens + cache_read_input_tokens + cache_creation_input_tokens；保留 5 分钟／1 小时缓存写入细分。流式 message_start 与 message_delta 按累计快照覆盖，不相加。[Prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)。 |
+| Gemini generateContent | 输入 = promptTokenCount（已含缓存），输出 = candidatesTokenCount + thoughtsTokenCount；total 优先取 totalTokenCount，toolUsePromptTokenCount 另列；原始模态字段保存在 raw。[UsageMetadata](https://ai.google.dev/api/generate-content#UsageMetadata)。 |
+
+可选缓存／思考字段缺省不另加数量；归一化细分仍保持缺失，不填零。原始 usage 对象中的扩展字段随有效计数保存；非负、可精确表示的整数（不超过 2^53−1）才参与累计，无有效计数时 usage 为 null。状态非 complete、响应标为 partial 或缺少输入／输出时标记部分用量；累计请求数包含无 usage 的请求，reported 和 partial 分别显示收到用量及其中部分用量的数量。
+
+Chat 流式请求默认合并 `stream_options.include_usage:true`，等待 finish_reason 后仍继续读取 final usage-only chunk；用户显式 false 时保留，以兼容不支持该选项的站点。预览展示同样的请求。停止或断流可能拿不到最终 usage，不推测。其他协议从终态响应和流式快照读取，保留 response ID、返回模型和 service tier；历史重建后的 native_events 也参与元数据恢复。

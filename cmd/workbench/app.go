@@ -19,6 +19,9 @@ import (
 )
 
 type app struct {
+	usageMu  sync.RWMutex
+	usage    map[string]usageRecord
+	mediaMu  sync.Mutex
 	store    *store
 	assets   *assetstore.Store
 	tasksMu  sync.RWMutex
@@ -109,6 +112,9 @@ func newApp(dir, password string) (*app, *httpserver.Server, error) {
 	if err = a.loadTasks(); err != nil {
 		return nil, nil, err
 	}
+	if err = a.loadUsage(); err != nil {
+		return nil, nil, err
+	}
 	middleware := []httpserver.Middleware{a.track, protection}
 	if password == "" {
 		middleware = append(middleware, localHostOnly)
@@ -117,7 +123,7 @@ func newApp(dir, password string) (*app, *httpserver.Server, error) {
 		middleware = append(middleware, httpserver.BasicAuth("workbench", password))
 	}
 	s := httpserver.New(middleware...)
-	routes := map[string]http.HandlerFunc{"POST /api/sessions/{id}/native": a.sendConversation, "GET /api/config": a.configAPI, "PUT /api/config": a.configAPI, "GET /api/sessions": a.sessionsAPI, "POST /api/sessions": a.sessionsAPI, "GET /api/sessions/{id}": a.sessionAPI, "PATCH /api/sessions/{id}": a.sessionAPI, "DELETE /api/sessions/{id}": a.sessionAPI, "POST /api/sessions/{id}/fork": a.forkAPI, "GET /api/logs": a.listLogs, "GET /api/logs/{id}": a.getLog, "GET /api/logs/{id}/{request}/{file}": a.downloadLog}
+	routes := map[string]http.HandlerFunc{"GET /api/usage": a.usageAPI, "POST /api/sessions/{id}/native": a.sendConversation, "GET /api/config": a.configAPI, "PUT /api/config": a.configAPI, "GET /api/sessions": a.sessionsAPI, "POST /api/sessions": a.sessionsAPI, "GET /api/sessions/{id}": a.sessionAPI, "PATCH /api/sessions/{id}": a.sessionAPI, "DELETE /api/sessions/{id}": a.sessionAPI, "POST /api/sessions/{id}/fork": a.forkAPI, "GET /api/logs": a.listLogs, "GET /api/logs/{id}": a.getLog, "GET /api/logs/{id}/{request}/{file}": a.downloadLog}
 	for path, fn := range routes {
 		if err = s.HandleFunc(path, fn); err != nil {
 			s.Close()
@@ -129,6 +135,10 @@ func newApp(dir, password string) (*app, *httpserver.Server, error) {
 			s.Close()
 			return nil, nil, err
 		}
+	}
+	if err = a.registerMedia(s); err != nil {
+		s.Close()
+		return nil, nil, err
 	}
 	if err = a.registerAssets(s); err != nil {
 		s.Close()

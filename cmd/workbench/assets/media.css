@@ -1,0 +1,19 @@
+.media-form { padding: 20px; }
+.media-options { display: grid; grid-template-columns: minmax(160px, 1fr) minmax(200px, 2fr); gap: 14px; }
+.media-options > .field { grid-column: auto; }
+.media-formats { margin: 24px 0; }
+.media-formats, .media-task { min-width: 0; overflow-wrap: anywhere; }
+.media-formats h2 { font-size: 1.15rem; }
+.media-format-group { margin-top: 18px; }
+.media-format-group h3 { font-size: .95rem; }
+.media-format-group .resource-table { width: 100%; }
+.media-task { border: 1px solid var(--wb-line); border-radius: 12px; padding: 16px; }
+.media-player { width: min(100% - 32px, 1080px); margin: 24px auto; }
+.media-player h1 { font-size: clamp(1.1rem, 3vw, 1.8rem); overflow-wrap: anywhere; }
+.media-player video { width: 100%; max-height: 70dvh; background: #161616; border-radius: 10px; }
+@media (max-width: 760px) {
+ .media-form { padding: 14px; }
+ .media-options { grid-template-columns: minmax(0, 1fr); }
+ .media-format-group td[data-label]::before { content: attr(data-label); display: block; color: var(--muted); font-size: .7rem; margin-bottom: 4px; }
+ .media-format-group .library-table td:first-child { min-width: 0; }
+}

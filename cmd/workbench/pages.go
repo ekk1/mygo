@@ -14,7 +14,7 @@ import (
 //go:embed assets/*
 var workbenchAssets embed.FS
 
-var pageNames = map[string]string{"/": "工作台", "/ai": "AI", "/library": "资产库", "/tasks": "后台任务", "/settings": "设置", "/logs": "请求日志"}
+var pageNames = map[string]string{"/": "工作台", "/ai": "AI", "/usage": "Token 用量", "/media": "媒体下载器", "/library": "资产库", "/tasks": "后台任务", "/settings": "设置", "/logs": "请求日志"}
 
 func registerPages(s *httpserver.Server) error {
 	assets, err := fs.Sub(workbenchAssets, "assets")
@@ -24,7 +24,7 @@ func registerPages(s *httpserver.Server) error {
 	if err = s.Handle("GET /assets/", http.StripPrefix("/assets/", http.FileServerFS(assets))); err != nil {
 		return err
 	}
-	for _, path := range []string{"/{$}", "/ai", "/ai/", "/library", "/tasks", "/settings", "/logs"} {
+	for _, path := range []string{"/{$}", "/ai", "/ai/", "/media", "/usage", "/library", "/tasks", "/settings", "/logs"} {
 		if err = s.HandleFunc("GET "+path, func(w http.ResponseWriter, r *http.Request) { renderWorkbenchPage(w, r, r.URL.Path, "工作台") }); err != nil {
 			return err
 		}
@@ -56,5 +56,5 @@ func workbenchPage(path, title string) webui.Page {
 			webui.El("div", webui.Attrs{"id": "app", "class": "page-root"}, webui.El("p", nil, webui.Text("正在载入工作台…"))),
 		),
 	)
-	return webui.Page{Title: title + " · 个人工作台", Theme: "sand", Styles: []string{"/assets/workbench.css", "/assets/library.css"}, Scripts: []string{"/assets/workbench.js", "/assets/library.js", "/assets/ai-pages.js", "/assets/resources.js"}, Body: body}
+	return webui.Page{Title: title + " · 个人工作台", Theme: "sand", Styles: []string{"/assets/workbench.css", "/assets/library.css", "/assets/media.css", "/assets/usage.css"}, Scripts: []string{"/assets/workbench.js", "/assets/library.js", "/assets/ai-pages.js", "/assets/resources.js", "/assets/media.js", "/assets/usage.js"}, Body: body}
 }

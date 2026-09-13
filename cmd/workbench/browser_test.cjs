@@ -8,6 +8,38 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawn, spawnSync } = require("node:child_process");
 const { chromium } = require("playwright");
+// Match the existing webui test compatibility for Debian Playwright 1.38.
+const { promisify } = require("node:util");
+const bundle = require("playwright-core/lib/utilsBundle");
+if (require("playwright-core/package.json").version === "1.38.0" && bundle.rimraf.length === 3) {
+  const original = bundle.rimraf;
+  bundle.rimraf = Object.assign(promisify(original), {sync:original.sync});
+}
+
+test("browser cleanup removes real directories using async and sync APIs", async () => {
+ const dir=await fs.mkdtemp(path.join(os.tmpdir(),"workbench-cleanup-test-"));
+ try {
+  const asyncDir=path.join(dir,"async"),syncDir=path.join(dir,"sync");
+  await fs.mkdir(asyncDir);await fs.mkdir(syncDir);
+  await fs.writeFile(path.join(asyncDir,"file"),"test");
+  await bundle.rimraf(asyncDir,{maxRetries:10});
+  await assert.rejects(fs.stat(asyncDir),{code:"ENOENT"});
+  bundle.rimraf.sync(syncDir);await assert.rejects(fs.stat(syncDir),{code:"ENOENT"});
+ } finally {await fs.rm(dir,{recursive:true,force:true});}
+});
+
+
+// Playwright 1.38 evaluates later waitForFunction polls with page-side eval,
+// which Chromium correctly blocks under the application's CSP. Poll via the
+// driver instead, keeping CSP and the browser sandbox fully enabled.
+async function waitForPage(page, predicate, arg, {timeout=30000}={}) {
+ const deadline=Date.now()+timeout;
+ do {
+  if(await page.evaluate(predicate,arg))return;
+  await new Promise(resolve=>setTimeout(resolve,50));
+ } while(Date.now()<deadline);
+ throw new Error("Page condition timed out: "+predicate.toString());
+}
 
 const repo = path.resolve(__dirname, "../..");
 const go = process.env.WORKBENCH_GO || "go";
@@ -24,7 +56,7 @@ test("background chat survives navigation without replaying or resending the str
   await page.goto(base+"/ai/openai/beta/chat");await page.getByLabel("消息",{exact:true}).fill("stream-cancel background navigation");
   const before=providerCalls;
   await page.getByRole("button",{name:"发送",exact:true}).click();
-  await page.waitForFunction(()=>document.querySelector("[data-live-text]")?.textContent.includes("来自假服务"));
+  await waitForPage(page, ()=>document.querySelector("[data-live-text]")?.textContent.includes("来自假服务"));
   await page.reload();
   await page.getByText("正在后台生成中",{exact:true}).waitFor({timeout:1500});
   assert.equal(await page.locator("[data-live-text]").count(),0,"a returning page must not reattach the original stream");
@@ -34,7 +66,7 @@ test("background chat survives navigation without replaying or resending the str
   for(let attempt=0;attempt<150;attempt++){finished=await(await fetch(base+"/api/sessions/"+active.id)).json();if(finished.messages.at(-1).status==="complete")break;await new Promise(resolve=>setTimeout(resolve,20));}
   assert.equal(finished.messages.at(-1).status,"complete","server must finish after the original browser disconnects");
   await page.getByRole("button",{name:"刷新状态",exact:true}).click();
-  await page.waitForFunction(()=>!document.querySelector(".composer button[type=submit]").disabled);
+  await waitForPage(page, ()=>!document.querySelector(".composer button[type=submit]").disabled);
   assert.match(await page.locator(".message.assistant").last().textContent(),/安全文本/);
   assert.equal(providerCalls,before+1,"navigation must neither cancel nor repeat generation");
  }finally{await page.close();}
@@ -64,7 +96,7 @@ test("asset management curates reusable images and pickers never refresh implici
 test("a delayed task refresh cannot attach itself to a newly selected conversation",async()=>{
  const page=await browser.newPage();let release;try{
   await page.goto(base+"/ai/openai/beta/chat");await page.getByLabel("消息",{exact:true}).fill("stream-cancel stale refresh");
-  await page.getByRole("button",{name:"发送",exact:true}).click();await page.waitForFunction(()=>document.querySelector("[data-live-text]")?.textContent.includes("来自假服务"));
+  await page.getByRole("button",{name:"发送",exact:true}).click();await waitForPage(page, ()=>document.querySelector("[data-live-text]")?.textContent.includes("来自假服务"));
   await page.reload();await page.getByText("正在后台生成中",{exact:true}).waitFor();
   const gate=new Promise(resolve=>{release=resolve;});let started;const waiting=new Promise(resolve=>{started=resolve;});
   await page.route("**/api/tasks/*",async route=>{started();await gate;await route.continue();});
@@ -158,6 +190,7 @@ before(async () => {
     if(request.method==="POST"&&url.pathname.endsWith("/responses")){
       providerCalls++;
       const result={id:"resp-test",status:"completed",output:[{type:"message",role:"assistant",content:[{type:"output_text",text:"来自假服务的 <b>安全文本</b>"}]}]};
+      if(raw.includes("token-metering"))Object.assign(result,{model:"actual-metered",usage:{input_tokens:100,output_tokens:30,total_tokens:130,input_tokens_details:{cached_tokens:80},output_tokens_details:{reasoning_tokens:10}}});
       if(body.stream&&raw.includes("stream-fail")){response.setHeader("Content-Type","text/event-stream");response.end('event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"已生成的部分回答"}\n\nevent: response.failed\ndata: {"type":"response.failed","response":{"status":"failed","error":{"message":"upstream denied"}}}\n\n');return;}
       if(body.stream&&raw.includes("stream-long")){
         const text=Array.from({length:90},(_,index)=>`第 ${index+1} 行流式文字`).join("\n");
@@ -188,8 +221,18 @@ before(async () => {
   });
   provider.baseURL = `http://127.0.0.1:${await listen(provider)}/v1`;
   const port = await freePort(); base = `http://127.0.0.1:${port}`;
+  const mediaBin = path.join(temp, "media-bin");
+  await fs.mkdir(mediaBin);
+  const mediaFake = `#!${process.execPath}
+const fs = require("node:fs"), path = require("node:path");
+const args = process.argv.slice(2), env = process.env;
+if (path.basename(process.argv[1]) === "ffmpeg") { fs.writeFileSync(env.MEDIA_OUTPUT, "ID3fixture audio"); }
+else if (args.includes("--dump-single-json")) console.log(JSON.stringify({id:"fixture",title:"媒体测试播客",duration:120,formats:[{format_id:"a",ext:"m4a",vcodec:"none",acodec:"aac",abr:128},{format_id:"v",ext:"mp4",vcodec:"avc1",acodec:"none",height:1080,filesize_approx:1000000},{format_id:"av",ext:"mp4",vcodec:"avc1",acodec:"aac",height:720}]}));
+else { const output=path.join(env.MEDIA_DIR,"browser-podcast.m4a"); fs.writeFileSync(output,Buffer.from("00000018667479704d344120000000004d34412069736f6d","hex")); fs.writeFileSync(env.MEDIA_MANIFEST,JSON.stringify({filepath:output,vcodec:"none",acodec:"aac"})); }
+`;
+  for (const name of ["yt-dlp", "ffmpeg"]) await fs.writeFile(path.join(mediaBin, name), mediaFake, {mode:0o700});
   // Access logs must not fill an unread pipe during the full route sweep.
-  workbench = spawn(binary, ["-addr", `127.0.0.1:${port}`, "-data-dir", path.join(temp, "data")], { cwd: repo, stdio: ["ignore", "ignore", "pipe"] });
+  workbench = spawn(binary, ["-addr", `127.0.0.1:${port}`, "-data-dir", path.join(temp, "data")], { cwd: repo, env: {...process.env, PATH: mediaBin + ":" + process.env.PATH}, stdio: ["ignore", "ignore", "pipe"] });
   let stderr = ""; workbench.stderr.on("data", chunk => { stderr += chunk; }); workbench.once("exit", code => { if (code && stderr) process.stderr.write(stderr); });
   await waitForServer(base + "/settings");
   if (process.env.WORKBENCH_BROWSER_LIBS) process.env.LD_LIBRARY_PATH = process.env.WORKBENCH_BROWSER_LIBS + (process.env.LD_LIBRARY_PATH ? ":" + process.env.LD_LIBRARY_PATH : "");
@@ -217,7 +260,7 @@ after(async () => {
 
 test("workspace navigation and profile settings are independent", async()=>{
  const page=await browser.newPage();try{
-  await page.goto(base);await page.getByRole("heading",{name:"个人工作台",exact:true}).waitFor();await page.locator(".module-entry").click();
+  await page.goto(base);await page.getByRole("heading",{name:"个人工作台",exact:true}).waitFor();await page.locator('.module-entry[href="/ai"]').click();
   await page.locator(".vendor-entry").last().waitFor();assert.equal(await page.locator(".vendor-entry").count(),5);
   await page.goto(base+"/ai/openai/profiles");await page.getByRole("button",{name:"新建 profile",exact:true}).click();
   const form=page.locator("#profile-editor");await form.getByLabel("Profile 名称").fill("第三个账号");await form.getByLabel("Base URL",{exact:true}).fill(provider.baseURL);await form.getByLabel("API key",{exact:true}).fill("third-secret");await form.getByLabel("Proxy URL",{exact:true}).fill("-");await form.getByRole("button",{name:"保存 profile"}).click();await page.getByText("Profile 已保存。").waitFor();
@@ -234,7 +277,7 @@ test("the initial shell keeps its layout while application scripts load",async()
   await page.route("**/assets/workbench.js",async route=>{await gate;await route.continue();});
   await page.goto(base+"/ai/openai/alpha/chat",{waitUntil:"commit"});
   await page.locator(".app-shell").waitFor();
-  await page.waitForFunction(()=>getComputedStyle(document.querySelector(".app-shell")).display==="grid",{},{timeout:1500});
+  await waitForPage(page, ()=>getComputedStyle(document.querySelector(".app-shell")).display==="grid",{},{timeout:1500});
   assert.ok((await page.locator(".sidebar").boundingBox()).width<300,"loading must not flash a full-width sidebar");
  }finally{release();await page.close();}
 });
@@ -252,7 +295,7 @@ test("preview is side-effect free, folds long input, and sends exact original bo
   await page.screenshot({path:path.join(repo,"bin/workbench-browser","request-preview-modal.png"),fullPage:true});
   const viewport=page.viewportSize();await page.setViewportSize({width:390,height:844});const bounds=await modal.boundingBox();assert.ok(bounds.x>=0&&bounds.x+bounds.width<=390,"the preview dialog must fit mobile width");await page.screenshot({path:path.join(repo,"bin/workbench-browser","request-preview-mobile.png"),fullPage:false});await page.setViewportSize(viewport);
   await page.keyboard.press("Escape");await modal.waitFor({state:"detached"});assert.equal(await page.getByRole("button",{name:"预览请求",exact:true}).evaluate(node=>node===document.activeElement),true);
-  await page.getByRole("button",{name:"发送",exact:true}).click();await page.locator(".message.assistant").last().waitFor();await page.waitForFunction(()=>!document.querySelector(".composer button[type=submit]").disabled);assert.deepEqual(calls.findLast(c=>c.url==="/v1/responses").body,preview.body);assert.equal(await page.locator(".message-text b").count(),0);
+  await page.getByRole("button",{name:"发送",exact:true}).click();await page.locator(".message.assistant").last().waitFor();await waitForPage(page, ()=>!document.querySelector(".composer button[type=submit]").disabled);assert.deepEqual(calls.findLast(c=>c.url==="/v1/responses").body,preview.body);assert.equal(await page.locator(".message-text b").count(),0);
   await page.getByLabel("消息",{exact:true}).fill("第二条");await page.getByRole("button",{name:"预览请求",exact:true}).click();await page.locator("[data-request-preview]").waitFor();assert.match(await page.locator("[data-request-preview]").textContent(),/output_text/);
   await page.keyboard.press("Escape");await page.getByLabel("消息",{exact:true}).fill("修改后");await page.getByRole("button",{name:"预览请求",exact:true}).click();await page.locator("[data-request-preview]").waitFor();assert.equal(JSON.parse(await page.locator("[data-request-preview]").textContent()).body.input.at(-1).content[0].text,"修改后");await page.keyboard.press("Escape");
   await page.getByLabel("当前 profile").selectOption("beta");await page.waitForURL("**/beta/chat");await page.getByRole("button",{name:"新建会话",exact:true}).waitFor();assert.equal(await page.locator(".session-item").count(),0,"sessions must be isolated");assert.equal(await page.getByLabel("消息",{exact:true}).inputValue(),"");
@@ -261,7 +304,7 @@ test("preview is side-effect free, folds long input, and sends exact original bo
 
 test("provider pages use their own native protocol and retain service tier",async()=>{
  for(const [vendor,result]of [["anthropic","Claude answer"],["gemini","Gemini answer"],["xai","安全文本"]]){
-  const page=await browser.newPage();try{await page.goto(`${base}/ai/${vendor}/${vendor}/chat`);await page.getByLabel("消息",{exact:true}).fill("hello "+vendor);await page.getByRole("button",{name:"发送",exact:true}).click();await page.locator(".message.assistant").last().waitFor();await page.waitForFunction(()=>!document.querySelector(".composer button[type=submit]").disabled);assert.match(await page.locator(".message.assistant").last().textContent(),new RegExp(result));}finally{await page.close();}
+  const page=await browser.newPage();try{await page.goto(`${base}/ai/${vendor}/${vendor}/chat`);await page.getByLabel("消息",{exact:true}).fill("hello "+vendor);await page.getByRole("button",{name:"发送",exact:true}).click();await page.locator(".message.assistant").last().waitFor();await waitForPage(page, ()=>!document.querySelector(".composer button[type=submit]").disabled);assert.match(await page.locator(".message.assistant").last().textContent(),new RegExp(result));}finally{await page.close();}
  }
  const claude=calls.findLast(c=>c.url==="/v1/messages");assert.equal(claude.headers["x-api-key"],"anthropic-secret");assert.equal(claude.headers.authorization,undefined);assert.equal(claude.body.max_tokens,4096);
  const gemini=calls.findLast(c=>/:(streamGenerateContent|generateContent)/.test(c.url));assert.equal(gemini.headers["x-goog-api-key"],"gemini-secret");assert.equal(gemini.body.contents[0].parts[0].text,"hello gemini");assert.equal(gemini.body.model,undefined);
@@ -322,10 +365,10 @@ test("Gemini thought parts remain in native results without becoming answer text
 test("desktop and mobile navigation, forms and tables fit the viewport",async()=>{
  const screenshots=path.join(repo,"bin","workbench-browser");await fs.mkdir(screenshots,{recursive:true});const page=await browser.newPage({viewport:{width:1440,height:1000}});
  try{
-  for(const [route,name]of [["/ai","providers"],["/ai/openai/alpha/chat","chat"],["/ai/openai/alpha/files","files"],["/ai/openai/alpha/image","image"]]){await page.goto(base+route);await page.waitForFunction(()=>document.querySelector('.page-heading'));await page.screenshot({path:path.join(screenshots,`redesign-${name}.png`),fullPage:true});}
-  for(const [id,name]of [["sand","燕麦"],["sage","鼠尾草"],["dusk","暮色"],["rose","玫瑰灰"]]){await page.goto(base+"/settings");await page.getByLabel("主题",{exact:true}).selectOption(id);await page.waitForFunction(id=>document.querySelector("[data-webui-theme-sheet]").dataset.webuiThemeSheet===id,id);await page.goto(base+"/ai/openai/alpha/image");await page.waitForFunction(id=>document.querySelector("[data-webui-theme-sheet]").dataset.webuiThemeSheet===id,id);await page.screenshot({path:path.join(screenshots,`redesign-theme-${id}.png`),fullPage:true});}
+  for(const [route,name]of [["/ai","providers"],["/ai/openai/alpha/chat","chat"],["/ai/openai/alpha/files","files"],["/ai/openai/alpha/image","image"]]){await page.goto(base+route);await waitForPage(page, ()=>document.querySelector('.page-heading'));await page.screenshot({path:path.join(screenshots,`redesign-${name}.png`),fullPage:true});}
+  for(const [id,name]of [["sand","燕麦"],["sage","鼠尾草"],["dusk","暮色"],["rose","玫瑰灰"]]){await page.goto(base+"/settings");await page.getByLabel("主题",{exact:true}).selectOption(id);await waitForPage(page, id=>document.querySelector("[data-webui-theme-sheet]").dataset.webuiThemeSheet===id,id);await page.goto(base+"/ai/openai/alpha/image");await waitForPage(page, id=>document.querySelector("[data-webui-theme-sheet]").dataset.webuiThemeSheet===id,id);await page.screenshot({path:path.join(screenshots,`redesign-theme-${id}.png`),fullPage:true});}
   await page.setViewportSize({width:390,height:844});
-  for(const route of ["/ai","/ai/openai/alpha/chat","/ai/openai/alpha/files","/ai/openai/alpha/image"]){await page.goto(base+route);await page.waitForFunction(()=>document.querySelector('.page-heading'));assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),`${route} overflows`);}
+  for(const route of ["/ai","/ai/openai/alpha/chat","/ai/openai/alpha/files","/ai/openai/alpha/image"]){await page.goto(base+route);await waitForPage(page, ()=>document.querySelector('.page-heading'));assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),`${route} overflows`);}
   await page.getByRole("button",{name:"☰ 导航"}).click();await page.locator("#sidebar.is-open").waitFor();assert.equal(await page.getByRole("link",{name:"请求日志",exact:true}).isVisible(),true);await page.screenshot({path:path.join(screenshots,"redesign-mobile-nav.png"),fullPage:true});
   await page.goto(base+"/ai/openai/alpha/chat");await page.getByLabel("消息",{exact:true}).waitFor();const messages=await page.locator("#messages").boundingBox(),composer=await page.locator(".composer").boundingBox();assert.ok(composer.y>=messages.y+messages.height,"composer overlaps messages");await page.screenshot({path:path.join(screenshots,"redesign-mobile-chat.png"),fullPage:true});
  }finally{await page.close();}
@@ -333,8 +376,8 @@ test("desktop and mobile navigation, forms and tables fit the viewport",async()=
 
 test("live text arrives before completion and cancellation retains the partial answer",async()=>{
  const page=await browser.newPage();try{
-  await page.goto(base+"/ai/openai/beta/chat");await page.getByLabel("消息",{exact:true}).fill("stream-cancel");await page.getByRole("button",{name:"发送",exact:true}).click();await page.waitForFunction(()=>document.querySelector("[data-live-text]")?.textContent.includes("来自假服务"));assert.match(await page.locator("[data-live-text]").textContent(),/来自假服务/);
-  await page.getByRole("button",{name:"停止",exact:true}).click();await page.waitForFunction(()=>!document.querySelector(".composer button[type=submit]").disabled);assert.match(await page.locator(".message.assistant").last().textContent(),/已停止/);assert.match(await page.locator(".message.assistant .message-text").first().textContent(),/来自假服务/);
+  await page.goto(base+"/ai/openai/beta/chat");await page.getByLabel("消息",{exact:true}).fill("stream-cancel");await page.getByRole("button",{name:"发送",exact:true}).click();await waitForPage(page, ()=>document.querySelector("[data-live-text]")?.textContent.includes("来自假服务"));assert.match(await page.locator("[data-live-text]").textContent(),/来自假服务/);
+  await page.getByRole("button",{name:"停止",exact:true}).click();await waitForPage(page, ()=>!document.querySelector(".composer button[type=submit]").disabled);assert.match(await page.locator(".message.assistant").last().textContent(),/已停止/);assert.match(await page.locator(".message.assistant .message-text").first().textContent(),/来自假服务/);
  }finally{await page.close();}
 });
 
@@ -444,7 +487,7 @@ test("JSONL downloads preserve bytes instead of entering the chat stream parser"
 test("conversations restore their selected branch and lock input while forking",async()=>{
  const page=await browser.newPage();let releaseFork;try{
   await page.goto(base+"/ai/openai/beta/chat");
-  const send=async text=>{await page.getByLabel("消息",{exact:true}).fill(text);await page.getByRole("button",{name:"发送",exact:true}).click();await page.waitForFunction(()=>!document.querySelector(".composer button[type=submit]").disabled);};
+  const send=async text=>{await page.getByLabel("消息",{exact:true}).fill(text);await page.getByRole("button",{name:"发送",exact:true}).click();await waitForPage(page, ()=>!document.querySelector(".composer button[type=submit]").disabled);};
   await send("first-path");await send("sibling-message");
   assert.equal(await page.locator(".session-panel").getByText("null",{exact:true}).count(),0);
   const scroll=await page.locator("#messages").evaluate(node=>({height:node.scrollHeight,top:node.scrollTop,view:node.clientHeight}));
@@ -464,7 +507,7 @@ test("conversations restore their selected branch and lock input while forking",
   assert.equal(await page.getByLabel("消息",{exact:true}).isDisabled(),true);
   assert.equal(await page.getByRole("button",{name:"新建会话",exact:true}).isDisabled(),true);
   assert.equal(await page.getByRole("button",{name:"发送",exact:true}).isDisabled(),true);
-  releaseFork();await page.waitForFunction(()=>!document.querySelector(".composer button[type=submit]").disabled);
+  releaseFork();await waitForPage(page, ()=>!document.querySelector(".composer button[type=submit]").disabled);
   assert.equal(await page.locator(".message").count(),2,"fork keeps only the selected ancestry");
  }finally{releaseFork?.();await page.close();}
 });
@@ -481,8 +524,8 @@ test("restored multi-turn history keeps every message body visible",async()=>{
    await page.route("**/api/sessions/saved-history",route=>route.fulfill({json:session}));
    await page.goto(base+"/ai/openai/alpha/chat");await page.getByRole("button",{name:"刷新会话",exact:true}).click();
    await page.getByRole("button",{name:"保存的多轮会话",exact:true}).click();
-   await page.waitForFunction(()=>document.querySelectorAll(".message[data-message-id]").length===24&&!document.querySelector(".composer button[type=submit]").disabled);
-   await page.waitForFunction(theme=>document.querySelector("[data-webui-theme-sheet]").dataset.webuiThemeSheet===theme,theme);
+   await waitForPage(page, ()=>document.querySelectorAll(".message[data-message-id]").length===24&&!document.querySelector(".composer button[type=submit]").disabled);
+   await waitForPage(page, theme=>document.querySelector("[data-webui-theme-sheet]").dataset.webuiThemeSheet===theme,theme);
    await fs.mkdir(path.join(repo,"bin/workbench-browser"),{recursive:true});
    await page.screenshot({path:path.join(repo,"bin/workbench-browser",`history-${theme}-${width}.png`),fullPage:true});
    const sizes=await page.locator(".message[data-message-id]").evaluateAll(nodes=>nodes.map(node=>({height:node.clientHeight,contentHeight:node.scrollHeight,textHeight:node.querySelector(".message-text").clientHeight})));
@@ -514,7 +557,7 @@ test("image conversations open cheaply and collapse into placeholders",async t=>
    await page.addInitScript(()=>sessionStorage.setItem("wb-session-alpha-responses.create",JSON.stringify({id:"media-history",parent:"media-15"})));
    await page.route("**/api/sessions/media-history",route=>route.fulfill({json:session}));
    const start=Date.now();await page.goto(base+"/ai/openai/alpha/chat");
-   await page.waitForFunction(()=>document.querySelectorAll(".message[data-message-id]").length===16&&!document.querySelector(".composer button[type=submit]").disabled);
+   await waitForPage(page, ()=>document.querySelectorAll(".message[data-message-id]").length===16&&!document.querySelector(".composer button[type=submit]").disabled);
    const rawBytes=await page.locator(".native-details pre").evaluateAll(nodes=>nodes.reduce((sum,node)=>sum+node.textContent.length,0));
    t.diagnostic(JSON.stringify({width,openMS:Date.now()-start,hiddenRawCharacters:rawBytes}));
    assert.equal(rawBytes,0,"opening a conversation must not stringify hidden native events");
@@ -554,13 +597,13 @@ test("long chat errors keep the input and retry actions accessible",async()=>{
    await page.route("**/api/sessions/new/native?preview=1",route=>route.fulfill({status:502,json:{error}}));
    await page.goto(base+"/ai/openai/alpha/chat");await page.getByLabel("消息",{exact:true}).fill("保留这份草稿");
    await page.getByRole("button",{name:"预览请求",exact:true}).click();
-   await page.waitForFunction(()=>!document.querySelector(".composer button[type=submit]").disabled&&document.querySelector(".workspace-status .error"));
+   await waitForPage(page, ()=>!document.querySelector(".composer button[type=submit]").disabled&&document.querySelector(".workspace-status .error"));
    assert.equal(await page.locator(".workspace-status .error").textContent(),error,"the full error remains available");
    assert.equal(await page.getByLabel("消息",{exact:true}).inputValue(),"保留这份草稿");
    assert.ok(await page.locator(".composer button[type=submit]").evaluate(button=>button.getBoundingClientRect().bottom<=document.querySelector(".conversation").getBoundingClientRect().bottom),"long errors must not clip the send action at "+width);
    await page.screenshot({path:path.join(repo,"bin/workbench-browser",`chat-error-${width}.png`),fullPage:true});
    await page.getByRole("button",{name:"预览请求",exact:true}).click();
-   await page.waitForFunction(()=>!document.querySelector(".composer button[type=submit]").disabled);
+   await waitForPage(page, ()=>!document.querySelector(".composer button[type=submit]").disabled);
   }finally{await page.close();}
  }
 });
@@ -638,7 +681,7 @@ test("every provider page uses the same usable desktop and mobile structure",asy
    await page.setViewportSize({width,height:900});
    for(const [vendor,pages]of Object.entries(groups))for(const feature of pages){
     try{await page.goto(base+"/ai/"+vendor+"/"+(vendor==="openai"?"alpha":vendor)+"/"+feature);}catch(error){throw new Error(vendor+"/"+feature+" at "+width+" pending requests: "+JSON.stringify([...pending])+"; page: "+await page.locator("body").innerText({timeout:2000}),{cause:error});}
-    try{await page.locator(".page-heading").waitFor({timeout:5000});await page.waitForFunction(()=>document.querySelector(".workspace-form,.resource-manager"));}catch(error){throw new Error(vendor+"/"+feature+" at "+width+": "+await page.locator("#app").innerText(),{cause:error});}
+    try{await page.locator(".page-heading").waitFor({timeout:5000});await waitForPage(page, ()=>document.querySelector(".workspace-form,.resource-manager"));}catch(error){throw new Error(vendor+"/"+feature+" at "+width+": "+await page.locator("#app").innerText(),{cause:error});}
     assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),vendor+"/"+feature+" overflows at "+width);
     assert.equal(await page.getByRole("alert").count(),0);
     if(["files","containers","batches"].includes(feature))await page.locator(".table-scroll:not([aria-busy]) table").waitFor();
@@ -666,7 +709,7 @@ test("every provider page uses the same usable desktop and mobile structure",asy
 test("partial stream failures remain visible and preserve the draft",async()=>{
  const page=await browser.newPage();try{
   await page.goto(base+"/ai/openai/beta/chat");await page.getByLabel("消息",{exact:true}).fill("stream-fail");
-  await page.getByRole("button",{name:"发送",exact:true}).click();await page.waitForFunction(()=>!document.querySelector(".composer button[type=submit]").disabled);
+  await page.getByRole("button",{name:"发送",exact:true}).click();await waitForPage(page, ()=>!document.querySelector(".composer button[type=submit]").disabled);
   assert.match(await page.locator(".message.assistant").last().textContent(),/已生成的部分回答/);
   assert.match(await page.locator(".message.assistant").last().getByRole("alert").textContent(),/upstream denied/);
   assert.equal(await page.getByLabel("消息",{exact:true}).inputValue(),"stream-fail");
@@ -707,7 +750,7 @@ test("resource lists stay cached until refreshed, including container files",asy
     await page.getByRole("button",{name:"创建 Batch",exact:true}).click();await page.waitForLoadState("networkidle");
     assert.equal(requests,before+1,"opening the Batch editor must not fetch file choices");
     await page.getByRole("dialog").getByRole("button",{name:"刷新文件",exact:true}).click();
-    await page.waitForFunction(()=>document.querySelector("#batch-files option")?.value==="cached-item");assert.equal(requests,before+2);
+    await waitForPage(page, ()=>document.querySelector("#batch-files option")?.value==="cached-item");assert.equal(requests,before+2);
    }
   }
   await page.goto(base+"/ai/openai/alpha/chat");await page.getByRole("button",{name:"发现模型",exact:true}).click();
@@ -726,14 +769,14 @@ test("logs and conversation lists load only on explicit refresh",async()=>{
  const page=await browser.newPage();let logRequests=0,sessionRequests=0;
  try{
   await page.route("**/api/logs",route=>{logRequests++;return route.fulfill({json:[]});});
-  await page.route("**/api/sessions?*",route=>{sessionRequests++;return route.fulfill({json:[]});});
+  await page.route(url=>url.pathname==="/api/sessions"&&url.searchParams.has("profile_id"),route=>{sessionRequests++;return route.fulfill({json:[]});});
   await page.goto(base+"/logs");await page.getByRole("button",{name:"刷新",exact:true}).waitFor();await page.waitForLoadState("networkidle");
   assert.equal(logRequests,0);await page.getByRole("button",{name:"刷新",exact:true}).click();await page.waitForLoadState("networkidle");assert.equal(logRequests,1);
   await page.reload();await page.getByRole("button",{name:"刷新",exact:true}).waitFor();await page.waitForLoadState("networkidle");assert.equal(logRequests,1);
   await page.goto(base+"/ai/openai/beta/chat");await page.getByRole("button",{name:"新建会话",exact:true}).waitFor();await page.waitForLoadState("networkidle");assert.equal(sessionRequests,0);
   await page.getByRole("button",{name:"刷新会话",exact:true}).click();await page.waitForLoadState("networkidle");assert.equal(sessionRequests,1);
   await page.getByLabel("消息",{exact:true}).fill("keep session list local");await page.getByRole("button",{name:"发送",exact:true}).click();
-  await page.waitForFunction(()=>!document.querySelector(".composer button[type=submit]").disabled);assert.equal(sessionRequests,1);
+  await waitForPage(page, ()=>!document.querySelector(".composer button[type=submit]").disabled);assert.equal(sessionRequests,1);
   assert.match(await page.locator(".session-list").textContent(),/keep session list local/);
   await page.reload();await page.locator(".session-item").first().waitFor();await page.waitForLoadState("networkidle");assert.equal(sessionRequests,1);
   await page.locator(".session-item").getByRole("button",{name:"管理",exact:true}).click();await page.getByRole("dialog").getByRole("button",{name:"重命名",exact:true}).click();
@@ -764,12 +807,114 @@ test("long streamed replies use one scroller and respect reading earlier text",a
  const page=await browser.newPage();try{
   await page.goto(base+"/ai/openai/beta/chat");await page.getByLabel("消息",{exact:true}).fill("stream-long");
   await page.getByRole("button",{name:"发送",exact:true}).click();
-  await page.waitForFunction(()=>document.querySelector("[data-live-text]")?.textContent.includes("第 90 行"));
+  await waitForPage(page, ()=>document.querySelector("[data-live-text]")?.textContent.includes("第 90 行"));
   assert.ok(await page.locator("[data-live-text]").evaluate(node=>node.scrollHeight<=node.clientHeight+2),"the message must not add a nested scroller");
   assert.ok(await page.locator("#messages").evaluate(node=>node.scrollHeight-node.scrollTop-node.clientHeight<2),"long streamed text follows the bottom");
   await page.locator("#messages").evaluate(node=>{node.scrollTop=0;});
-  await page.waitForFunction(()=>!document.querySelector(".composer button[type=submit]").disabled);
+  await waitForPage(page, ()=>!document.querySelector(".composer button[type=submit]").disabled);
   assert.equal(await page.locator("#messages").evaluate(node=>node.scrollTop),0,"completion preserves the reader's position");
   assert.match(await page.locator(".message.assistant").last().textContent(),/最后一行/);
+ }finally{await page.close();}
+});
+
+
+test("media downloader discovers formats explicitly and imports downloaded and extracted assets", async () => {
+ const page=await browser.newPage();let lists=0, discoveries=0;
+ page.on("request",r=>{const p=new URL(r.url()).pathname;if(p==="/api/assets"&&r.method()==="GET")lists++;if(p==="/api/media/formats")discoveries++;});
+ try {
+  await page.goto(base+"/media");await page.getByRole("heading",{name:"媒体下载器",exact:true}).waitFor();
+  assert.equal(discoveries,0);
+  await page.getByLabel("媒体链接",{exact:true}).fill("https://example.com/podcast");
+  await page.getByLabel("代理",{exact:true}).fill("-");
+  await page.getByRole("button",{name:"发现格式",exact:true}).click();
+  await page.getByText("媒体测试播客",{exact:true}).waitFor();assert.equal(discoveries,1);
+  const audio=page.locator("[data-format-id=a]");await audio.getByRole("button",{name:"选择",exact:true}).click();
+  assert.equal(await page.getByLabel("格式表达式",{exact:true}).inputValue(),"a");
+  for(const width of [1280,390])for(const theme of ["rose","sand","sage","dusk"]){
+   await page.setViewportSize({width,height:900});await page.evaluate(t=>localStorage.setItem("webui-theme",t),theme);
+   await page.reload();await page.getByRole("heading",{name:"媒体下载器",exact:true}).waitFor();
+   await page.getByRole("button",{name:"发现格式",exact:true}).click();await page.getByText("媒体测试播客",{exact:true}).waitFor();
+   assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));
+   await page.screenshot({path:path.join(repo,"bin/workbench-browser",`media-${theme}-${width}.png`),fullPage:true});
+  }
+  await page.getByRole("button",{name:"开始下载",exact:true}).click();
+  await page.locator(".media-task").getByText("browser-podcast.m4a",{exact:true}).first().waitFor();
+  assert.equal(lists,0,"completion must not reload the asset list");
+  await page.goto(base+"/library");const row=page.locator("tr[data-asset-id]").filter({hasText:"browser-podcast.m4a"});await row.waitFor();
+  await row.getByRole("button",{name:"抽取音频",exact:true}).click();
+  await page.getByRole("dialog",{name:"抽取音频",exact:true}).getByText("browser-podcast.mp3",{exact:true}).first().waitFor();
+  assert.equal(lists,0);
+  await page.keyboard.press("Escape");
+  await row.getByRole("button",{name:"精选",exact:true}).click();
+  await row.getByRole("button",{name:"取消精选",exact:true}).waitFor();
+  await page.goto(base+"/media");await page.locator(".media-task").getByText("browser-podcast.m4a",{exact:true}).first().waitFor();
+  await page.goto(base+"/library");await row.getByRole("button",{name:"取消精选",exact:true}).waitFor({timeout:2000});
+  assert.equal(lists,0,"restoring history must preserve curated asset cache");
+  await page.goto(base+"/tasks");
+  await page.getByLabel("功能",{exact:true}).selectOption({label:"媒体下载"});
+  await page.locator("tr[data-task-id]").filter({hasText:"https://example.com/podcast"}).waitFor();
+  await page.getByLabel("功能",{exact:true}).selectOption({label:"抽取音频"});
+  await page.locator("tr[data-task-id]").filter({hasText:"browser-podcast.m4a"}).waitFor();
+
+ } finally {await page.close();}
+});
+
+test("asset player saves and restores position manually across reloads",async()=>{
+ const wav=Buffer.alloc(44+16000*4*2);wav.write("RIFF");wav.writeUInt32LE(wav.length-8,4);wav.write("WAVEfmt ",8);wav.writeUInt32LE(16,16);wav.writeUInt16LE(1,20);wav.writeUInt16LE(1,22);wav.writeUInt32LE(16000,24);wav.writeUInt32LE(32000,28);wav.writeUInt16LE(2,32);wav.writeUInt16LE(16,34);wav.write("data",36);wav.writeUInt32LE(wav.length-44,40);
+ const form=new FormData();form.append("file",new Blob([wav],{type:"audio/wav"}),"position.wav");
+ const response=await fetch(base+"/api/assets",{method:"POST",headers:{"X-Workbench-Request":"1"},body:form});assert.equal(response.status,201);const [asset]=await response.json();
+ const page=await browser.newPage();let saves=0,restores=0;
+ page.on("request",r=>{if(r.url().endsWith("/position")){if(r.method()==="POST")saves++;else restores++;}});
+ try {
+  await page.goto(base+"/media/player/"+asset.id);await waitForPage(page, ()=>document.querySelector("video").readyState>0);
+  assert.equal(restores,0);assert.equal(saves,0);
+  await page.evaluate(()=>new Promise(resolve=>{const v=document.querySelector("video");v.addEventListener("seeked",resolve,{once:true});v.currentTime=2;}));
+  await page.getByRole("button",{name:"保存位置",exact:true}).click();await page.getByText("位置已保存。",{exact:true}).waitFor();
+  await page.reload();await waitForPage(page, ()=>document.querySelector("video").readyState>0);
+  assert.equal(restores,0);assert.equal(saves,1);
+  await page.getByRole("button",{name:"恢复位置",exact:true}).click();await page.getByText("位置已恢复。",{exact:true}).waitFor();
+  const state=await page.locator("video").evaluate(v=>({time:v.currentTime,paused:v.paused}));assert.ok(Math.abs(state.time-2)<.1);assert.equal(state.paused,true);assert.equal(restores,1);
+  await page.setViewportSize({width:390,height:844});assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));
+  await page.screenshot({path:path.join(repo,"bin/workbench-browser","media-player-mobile.png"),fullPage:true});
+ } finally {await page.close();}
+});
+
+test("token usage shows each answer, session totals and durable profile ledger",async()=>{
+ const page=await browser.newPage();let reads=0;
+ page.on("request",r=>{if(new URL(r.url()).pathname==="/api/usage")reads++;});
+ try {
+  await page.goto(base+"/usage");await page.getByRole("heading",{name:"Token 用量",exact:true}).waitFor({timeout:3000});
+  assert.equal(reads,0);
+  await page.goto(base+"/ai/openai/beta/chat");
+  await page.getByLabel("消息",{exact:true}).fill("token-metering");
+  await page.getByRole("button",{name:"发送",exact:true}).click();
+  await page.locator(".message.assistant .token-usage").getByText(/合计 130/).waitFor();
+  assert.match(await page.locator(".session-usage").textContent(),/合计 130/);
+  await page.getByLabel("消息",{exact:true}).fill("token-metering second");
+  await page.getByRole("button",{name:"发送",exact:true}).click();
+  await waitForPage(page,()=>document.querySelector(".session-usage")?.textContent.includes("合计 260"));
+  await page.goto(base+"/usage?profile_id=beta&model=actual-metered");
+  assert.equal(reads,0);
+  await page.getByRole("button",{name:"刷新用量",exact:true}).click();
+  await page.locator(".usage-total").getByText(/合计 260/).waitFor();
+  assert.match(await page.locator(".usage-total").textContent(),/缓存命中 160/);
+  assert.equal(await page.locator("[data-usage-id]").count(),2);
+  await page.getByLabel("模型（精确匹配）").fill("unknown");
+  await page.getByRole("button",{name:"刷新用量",exact:true}).click();
+  await page.getByText("没有符合条件的请求。",{exact:true}).waitFor();
+  await page.getByLabel("模型（精确匹配）").fill("actual-metered");
+  await page.getByRole("button",{name:"刷新用量",exact:true}).click();
+  await page.locator(".usage-total").getByText(/合计 260/).waitFor();
+  assert.match(await page.locator(".usage-total").textContent(),/缓存命中 160/);
+  const [download]=await Promise.all([page.waitForEvent("download"),page.getByRole("link",{name:"导出 JSON",exact:true}).click()]);
+  const exported=JSON.parse(await fs.readFile(await download.path(),"utf8"));assert.equal(exported.total.tokens.total,260);
+  for(const theme of ["sand","rose","sage","dusk"])for(const width of [1440,390]){
+   await page.setViewportSize({width,height:1000});
+   await page.goto(base+"/settings");await page.getByLabel("主题",{exact:true}).selectOption(theme);
+   await waitForPage(page,theme=>document.querySelector("[data-webui-theme-sheet]").dataset.webuiThemeSheet===theme,theme);
+   await page.goto(base+"/usage?profile_id=beta&model=actual-metered");await page.locator(".usage-total").waitFor();
+   assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));
+   await page.screenshot({path:path.join(repo,"bin/workbench-browser",`usage-${theme}-${width}.png`),fullPage:true});
+  }
  }finally{await page.close();}
 });

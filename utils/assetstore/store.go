@@ -208,7 +208,9 @@ func (s *Store) Add(name, contentType string, source Source, reader io.Reader, m
 	// Preserve useful media hints for formats the standard sniffer cannot detect.
 	// Detectable HTML/XML/plain text must never inherit an image or video claim.
 	if typ, _, parseErr := mime.ParseMediaType(contentType); parseErr == nil {
-		if a.ContentType == "application/octet-stream" || a.ContentType == "application/ogg" && (typ == "audio/ogg" || typ == "video/ogg") {
+		if a.ContentType == "application/octet-stream" || a.ContentType == "application/ogg" && (typ == "audio/ogg" || typ == "video/ogg") ||
+			a.ContentType == "video/mp4" && typ == "audio/mp4" ||
+			a.ContentType == "video/webm" && typ == "audio/webm" {
 			a.ContentType = typ
 		}
 	}

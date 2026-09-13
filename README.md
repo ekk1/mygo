@@ -14,7 +14,7 @@ Go 1.24 或更高版本。整个仓库使用单个 Go module：`github.com/ekk1/
 .
 ├── cmd/
 │   ├── hello/            # 最小命令示例
-│   ├── workbench/        # 个人工作台：AI 独立页面、后台任务、资产与日志
+│   ├── workbench/        # 个人工作台：AI、媒体下载、后台任务、资产、用量与日志
 │   └── webui-demo/       # 页面、表单和配色示例
 ├── utils/
 │   ├── <模块>/           # 实现、测试和模块 README
@@ -60,7 +60,7 @@ go build -o ./bin/workbench ./cmd/workbench
 ./bin/workbench -addr 127.0.0.1:8090 -data-dir ./workbench-data
 ```
 
-进入 AI 模块，选择服务商并创建 profile（key、base URL、proxy URL），再进入文字、图片、音频或资源页面。完整用法、跨机访问、日志和存储说明见 [workbench 文档](cmd/workbench/README.md)。
+可直接进入媒体下载器下载播客或视频、入资产库并抽取音频。使用 AI 时，选择服务商并创建 profile（key、base URL、proxy URL），再进入文字、图片、音频或资源页面。完整用法、跨机访问、日志和存储说明见 [workbench 文档](cmd/workbench/README.md)。
 
 ## 后续需求
 

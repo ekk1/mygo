@@ -445,6 +445,7 @@ func (a *app) sendConversation(w http.ResponseWriter, r *http.Request) {
 			return writeConversationEvent(w, map[string]any{"type": "event", "event": event})
 		})
 	}
+	ctx = context.WithValue(ctx, usageContextKey{}, usageOrigin{SessionID: v.ID, MessageID: assistant.ID})
 	result, callErr := a.executeNative(ctx, p, in.Operation, params, nil, in.SaveResponse)
 	if in.Stream {
 		result = reduceConversationStream(p.Kind, in.Operation, result)

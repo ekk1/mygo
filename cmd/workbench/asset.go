@@ -6,6 +6,8 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -148,8 +150,14 @@ func (a *app) assetsAPI(w http.ResponseWriter, r *http.Request) {
 func (a *app) assetAPI(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if r.Method == http.MethodDelete {
+		a.mediaMu.Lock()
+		defer a.mediaMu.Unlock()
 		if err := a.assets.Delete(id); err != nil {
 			apiError(w, assetErrorStatus(err), err)
+			return
+		}
+		if err := os.Remove(filepath.Join(a.store.dir, "positions", id+".json")); err != nil && !errors.Is(err, os.ErrNotExist) {
+			apiError(w, 500, fmt.Errorf("资产已删除，但播放位置清理失败: %w", err))
 			return
 		}
 		writeJSON(w, 200, map[string]bool{"ok": true})

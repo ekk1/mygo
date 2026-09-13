@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -222,7 +223,12 @@ func (a *app) executeNative(ctx context.Context, p provider, operation string, p
 	if err != nil {
 		return nil, err
 	}
+	record, err := a.beginUsage(ctx, p, operation, params)
+	if err != nil {
+		return nil, err
+	}
 	result, err := a.sendNative(ctx, p, operation, spec, saveResponse)
+	err = errors.Join(err, a.finishUsage(record, result, err))
 	return result, redactNativeError(err, p.APIKey)
 }
 
@@ -413,6 +419,7 @@ func requireUploads(uploads resourceUploads, field string, exact int) error {
 }
 
 func buildNativeRequest(p provider, operation string, raw json.RawMessage, uploads resourceUploads) (nativeRequestSpec, error) {
+	raw = usageStreamParams(operation, raw)
 	kind := p.Kind
 	if kind == "" {
 		kind = "openai"

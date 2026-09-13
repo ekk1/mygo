@@ -201,3 +201,20 @@ func TestOggKeepsAudioAndVideoClassification(t *testing.T) {
 		}
 	}
 }
+
+func TestAudioContainersKeepMediaHint(t *testing.T) {
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ data, hint, want string }{
+		{"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom", "audio/mp4", "audio/mp4"},
+		{"\x1a\x45\xdf\xa3webm", "audio/webm", "audio/webm"},
+		{"<html>not media", "audio/mp4", "text/html; charset=utf-8"},
+	} {
+		a, err := s.Add("audio", tc.hint, nil, strings.NewReader(tc.data), 100)
+		if err != nil || a.ContentType != tc.want {
+			t.Errorf("classification: %q %v; want %q", a.ContentType, err, tc.want)
+		}
+	}
+}

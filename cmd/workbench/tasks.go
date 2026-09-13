@@ -264,6 +264,7 @@ func (a *app) runGeneration(t *taskEntry, ctx context.Context, job nativeGenerat
 	t.mu.Unlock()
 	var result any
 	if callErr == nil && ctx.Err() == nil {
+		ctx = context.WithValue(ctx, usageContextKey{}, usageOrigin{SessionID: v.SessionID, MessageID: job.assistantID, TaskID: v.ID})
 		result, callErr = a.executeNative(ctx, job.provider, job.operation, job.params, job.uploads, job.saveResponse)
 	}
 	if job.stream {

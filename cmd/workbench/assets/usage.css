@@ -1,0 +1,13 @@
+.token-usage { margin: 8px 0; overflow-wrap: anywhere; }
+.token-usage summary { cursor: pointer; }
+.token-usage pre, .usage-table pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 260px; overflow: auto; font-size: .75rem; }
+.usage-summary { display: flex; flex-direction: column; gap: 4px; overflow-wrap: anywhere; }
+.session-usage { flex: 0 0 auto; padding: 8px 14px; border-bottom: 1px solid var(--wb-line); font-size: .78rem; max-height: 110px; overflow: auto; }
+.session-usage:empty { display: none; }
+.usage-results { margin-top: 16px; }
+.usage-total .actions { margin-top: 12px; }
+.usage-table { overflow-x: auto; }
+.usage-table table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+.usage-table th, .usage-table td { padding: 12px 8px; text-align: left; vertical-align: top; overflow-wrap: anywhere; border-bottom: 1px solid var(--wb-line); }
+.usage-table th:first-child { width: 42%; }
+@media (max-width: 600px) { .usage-table td, .usage-table th { padding: 8px 4px; font-size: .8rem; } }

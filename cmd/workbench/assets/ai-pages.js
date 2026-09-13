@@ -146,7 +146,8 @@
     field(promptLabels[page]||"提示词 / 输入",prompt),
     ...Object.values(chosen).map(control=>control.node),
     status,el("div",{class:"actions"},send,previewButton,stop,chat?el("small",{class:"muted composer-hint"},"Enter 换行 · Ctrl / ⌘ + Enter 发送"):null));
-  const conversation=chat?el("section",{class:"conversation","aria-label":"当前对话"},messages,composer):null;
+  const usageSummary=el("div",{class:"session-usage"});
+  const conversation=chat?el("section",{class:"conversation","aria-label":"当前对话"},usageSummary,messages,composer):null;
   const form=el("form",{class:"workspace-form "+(chat?"chat-form":"task-form"),novalidate:""},
     vendor==="xai"&&["speech","transcribe"].includes(page)?null:modelBar,
     chat?conversation:composer,configuration,chat?null:result);
@@ -196,6 +197,8 @@
   function renderMessages(followEnd=false){
     const scrollTop=messages.scrollTop,atEnd=followEnd||messages.scrollHeight-messages.scrollTop-messages.clientHeight<48;
     messages.replaceChildren();
+    usageSummary.replaceChildren();
+    if(session?.messages.length)usageSummary.append(W.usageSummary(session.usage,"会话全部分支 · 已知累计"),el("div",{class:"small muted"},"当前分支 · "+["input","output","total"].map((k,i)=>["输入","输出","合计"][i]+" "+(W.sumUsage(pathMessages()).tokens[k]?.toLocaleString("zh-CN")??"未知")).join(" · ")));
     if(!session?.messages.length){messages.append(el("div",{class:"empty"},el("strong",{},"开始一个新对话"),el("p",{},"选择模型，输入消息；需要时再调整参数。")));return;}
     const parents=new Set(session.messages.map(message=>message.parent_id));
     const leaves=session.messages.filter(message=>!parents.has(message.id));
@@ -237,6 +240,7 @@
             parent=session.head_id;remember();invalidate();renderMessages();updateSessionList();
           }finally{busy=false;unlock();unlockList();applyProtocol();renderMessages();renderSessions();}
         },"quiet",status);
+        if(message.role==="assistant")body.append(W.usageLine(message.usage));
         body.append(el("div",{class:"message-meta"},message.text?W.copyButton(message.text):resultCopy,branch,fork,native));
         view={node,continuation,branch,fork,fold};messageViews.set(message,view);
       }

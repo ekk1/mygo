@@ -49,7 +49,7 @@
     return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString();
   };
   const profileName = id => W.config?.providers?.find(profile => profile.id === id)?.name || id || "—";
-  const sourceName = asset => asset.source?.kind === "upload" ? "本地上传" : asset.source?.provider_id ? `${profileName(asset.source.provider_id)} · ${asset.source.operation || "生成"}` : "生成结果";
+  const sourceName = asset => asset.source?.kind === "yt-dlp" ? "yt-dlp · " + (asset.source.url || "下载") : asset.source?.kind === "ffmpeg" ? "ffmpeg 音频抽取 · " + (asset.source.asset_id || "") : asset.source?.kind === "upload" ? "本地上传" : asset.source?.provider_id ? `${profileName(asset.source.provider_id)} · ${asset.source.operation || "生成"}` : "生成结果";
   const downloadLink = asset => el("a", {href: assetURL(asset.id, true), class: "button quiet", download: asset.name || ""}, "下载");
   function thumbnail(asset) {
     return safeImage(asset)
@@ -75,7 +75,7 @@
         el("strong", {class: "asset-name"}, current.name), preview(current),
         el("p", {class: "small muted"}, `${kind(current)} · ${bytes(current.size)} · ${time(current.created_at)}`),
         el("p", {class: "small muted"}, sourceName(current)),
-        el("div", {class: "actions"}, downloadLink(current), el("a", {href: "/library", target: "_blank", rel: "noopener", class: "button quiet"}, "管理资产"))));
+        el("div", {class: "actions"}, downloadLink(current), ...(W.mediaActions?.(current) || []), el("a", {href: "/library", target: "_blank", rel: "noopener", class: "button quiet"}, "管理资产"))));
     } catch (error) {
       if (modal.dialog.isConnected) modal.body.replaceChildren(W.notice(error.message, true));
     }
@@ -244,7 +244,7 @@
         }, "删除资产库中的文件。已保存结果中的这个素材引用将无法继续预览或下载。");
         if (completed) search.focus();
       }, "danger", status);
-      return el("div", {class: "row-actions"}, open, downloadLink(asset), featured, edit, remove);
+      return el("div", {class: "row-actions"}, open, downloadLink(asset), ...(W.mediaActions?.(asset) || []), featured, edit, remove);
     }
     function render() {
       const query = search.value.trim().toLowerCase();
@@ -374,7 +374,7 @@
     for (const id of [...tasks.rows.map(task => task.provider_id), query.get("provider_id")].filter(Boolean)) if (!profileValues.has(id)) profileValues.set(id, id);
     const profiles = select("task_profile", [["", "全部 profiles"], ...profileValues], query.get("provider_id") || "");
     const state = select("task_status", [["", "全部状态"], ...Object.entries(taskStatus)]);
-    const featureNames = {chat: "文字", image: "图片生成", "image-edit": "图片编辑", speech: "语音合成", transcribe: "音频转写", translate: "音频翻译", video: "视频"};
+    const featureNames = {download: "媒体下载", "extract-audio": "抽取音频", chat: "文字", image: "图片生成", "image-edit": "图片编辑", speech: "语音合成", transcribe: "音频转写", translate: "音频翻译", video: "视频"};
     const featureValues = new Set([...Object.keys(featureNames), ...tasks.rows.map(task => task.feature), query.get("feature")].filter(Boolean));
     const feature = select("task_feature", [["", "全部功能"], ...[...featureValues].map(value => [value, featureNames[value] || value])], query.get("feature") || "");
     const status = el("div", {}), tableBox = el("div", {class: "table-scroll"}), count = el("p", {class: "asset-count small muted", role: "status"});
